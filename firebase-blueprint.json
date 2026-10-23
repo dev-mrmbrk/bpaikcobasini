@@ -1,0 +1,102 @@
+{
+  "entities": {
+    "User": {
+      "title": "User",
+      "description": "Daftar pegawai resmi BPAIK dan perannya",
+      "type": "object",
+      "properties": {
+        "email": { "type": "string", "maxLength": 254 },
+        "name": { "type": "string", "maxLength": 150 },
+        "npp": { "type": "string", "maxLength": 50 },
+        "unitKerja": { "type": "string", "maxLength": 100 },
+        "role": { "type": "string", "enum": ["ADMIN", "PANITIA", "PEGAWAI"] },
+        "status": { "type": "string", "enum": ["aktif", "nonaktif"] },
+        "createdAt": { "type": "string", "maxLength": 50 },
+        "updatedAt": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["email", "name", "role", "status"]
+    },
+    "Event": {
+      "title": "Event",
+      "description": "Kegiatan dan sesi absensi BPAIK",
+      "type": "object",
+      "properties": {
+        "title": { "type": "string", "maxLength": 200 },
+        "description": { "type": "string", "maxLength": 1000 },
+        "date": { "type": "string", "maxLength": 30 },
+        "startTime": { "type": "string", "maxLength": 20 },
+        "endTime": { "type": "string", "maxLength": 20 },
+        "location": { "type": "string", "maxLength": 200 },
+        "createdBy": { "type": "string", "maxLength": 100 },
+        "creatorName": { "type": "string", "maxLength": 150 },
+        "status": { "type": "string", "enum": ["dijadwalkan", "berlangsung", "selesai", "dibatalkan"] },
+        "sessionDurationMinutes": { "type": "number" },
+        "sessionStatus": { "type": "string", "enum": ["belum_dibuka", "aktif", "ditutup"] },
+        "sessionOpenedAt": { "type": "string", "maxLength": 50 },
+        "sessionClosedAt": { "type": "string", "maxLength": 50 },
+        "createdAt": { "type": "string", "maxLength": 50 },
+        "updatedAt": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["title", "date", "startTime", "endTime", "location", "status", "sessionStatus"]
+    },
+    "AttendanceRecord": {
+      "title": "AttendanceRecord",
+      "description": "Catatan presensi per kegiatan dan tanda tangan digital pegawai",
+      "type": "object",
+      "properties": {
+        "eventId": { "type": "string", "maxLength": 100 },
+        "eventTitle": { "type": "string", "maxLength": 200 },
+        "eventDate": { "type": "string", "maxLength": 30 },
+        "userId": { "type": "string", "maxLength": 128 },
+        "userEmail": { "type": "string", "maxLength": 254 },
+        "userName": { "type": "string", "maxLength": 150 },
+        "userNpp": { "type": "string", "maxLength": 50 },
+        "userUnitKerja": { "type": "string", "maxLength": 100 },
+        "scanTime": { "type": "string", "maxLength": 50 },
+        "attendanceStatus": { "type": "string", "enum": ["HADIR", "IZIN", "SAKIT", "ALPA"] },
+        "signatureStatus": { "type": "string", "enum": ["MENUNGGU_KONFIRMASI", "TERKONFIRMASI"] },
+        "signatureData": { "type": "string", "maxLength": 50000 },
+        "signatureTimestamp": { "type": "string", "maxLength": 50 },
+        "verifiedBy": { "type": "string", "maxLength": 100 },
+        "notes": { "type": "string", "maxLength": 500 },
+        "createdAt": { "type": "string", "maxLength": 50 },
+        "updatedAt": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["eventId", "userEmail", "userName", "scanTime", "attendanceStatus", "signatureStatus"]
+    },
+    "AuditLog": {
+      "title": "AuditLog",
+      "description": "Rekam jejak aktivitas otentikasi, scan, koreksi manual dan sistem",
+      "type": "object",
+      "properties": {
+        "action": { "type": "string", "maxLength": 100 },
+        "actorEmail": { "type": "string", "maxLength": 254 },
+        "actorName": { "type": "string", "maxLength": 150 },
+        "actorRole": { "type": "string", "maxLength": 50 },
+        "targetType": { "type": "string", "maxLength": 50 },
+        "targetId": { "type": "string", "maxLength": 100 },
+        "description": { "type": "string", "maxLength": 500 },
+        "timestamp": { "type": "string", "maxLength": 50 }
+      },
+      "required": ["action", "actorEmail", "description", "timestamp"]
+    }
+  },
+  "firestore": {
+    "/users/{userId}": {
+      "schema": { "$ref": "User" },
+      "description": "Profil pegawai dan hak akses sistem"
+    },
+    "/events/{eventId}": {
+      "schema": { "$ref": "Event" },
+      "description": "Daftar agenda kegiatan dan sesi absensi BPAIK"
+    },
+    "/attendanceRecords/{recordId}": {
+      "schema": { "$ref": "AttendanceRecord" },
+      "description": "Catatan presensi unik per kegiatan dan pegawai beserta tanda tangan digital"
+    },
+    "/auditLogs/{logId}": {
+      "schema": { "$ref": "AuditLog" },
+      "description": "Catatan audit aktivitas admin, panitia, dan sistem absensi"
+    }
+  }
+}
