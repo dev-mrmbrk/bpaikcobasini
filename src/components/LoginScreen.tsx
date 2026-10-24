@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
 import { ShieldCheck, AlertCircle, ArrowRight, UserCheck, HelpCircle, Camera, QrCode } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
-import { Footer, UnisaEmblem } from './Footer';
+import { Footer } from './Footer';
+
 import { CardLoginModal } from './CardLoginModal';
 
 export const LoginScreen: React.FC = () => {
@@ -10,9 +11,17 @@ export const LoginScreen: React.FC = () => {
   const [showCardScanner, setShowCardScanner] = useState(false);
 
   return (
-    <div className="min-h-screen w-full bg-[#1e2227] relative flex flex-col justify-between font-sans antialiased overflow-x-hidden">
+    <div className="min-h-[100svh] w-full bg-[#f7fcf8] relative isolate flex flex-col font-sans antialiased overflow-x-hidden">
+      <picture aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 h-[100svh] -z-10 overflow-hidden">
+        <source media="(min-width: 768px)" srcSet="/images/Login_BG_BPAIK_Desktop.jpg" />
+        <img
+          src="/images/Login_BG_BPAIK_Mobile.jpg"
+          alt=""
+          className="h-full w-full object-cover object-center"
+        />
+      </picture>
       {/* Decorative ambient dashed geometric paths */}
-      <svg className="absolute inset-0 w-full h-full pointer-events-none opacity-30" xmlns="http://www.w3.org/2000/svg">
+      <svg className="absolute inset-0 w-full h-full pointer-events-none opacity-30 hidden" xmlns="http://www.w3.org/2000/svg">
         <path
           d="M -50,120 Q 200,-50 450,150 T 950,80 T 1450,180"
           fill="none"
@@ -30,12 +39,12 @@ export const LoginScreen: React.FC = () => {
         <circle cx="90%" cy="18%" r="130" fill="none" stroke="#F4C542" strokeWidth="2" strokeDasharray="8 8" opacity="0.3" />
       </svg>
 
-      <div className="flex-1 flex items-center justify-center w-full z-10 p-3 sm:p-6 lg:p-8">
+      <div className="relative z-10 flex-1 flex items-start md:items-start justify-end w-full max-w-[1600px] mx-auto px-4 sm:px-8 lg:px-12 xl:px-16 pt-[53vh] pb-6 md:pt-[215px] md:pb-8">
         {/* Main 3D Card Container */}
-        <div className="relative w-full max-w-[880px] bg-white rounded-3xl sm:rounded-[36px] shadow-[0_12px_0_0_#cbd5e1,0_25px_40px_rgba(0,0,0,0.25)] border border-slate-200 overflow-hidden flex flex-col md:flex-row min-h-[460px]">
+        <div className="relative w-full max-w-[1440px] bg-transparent rounded-none shadow-none border-0 overflow-visible flex flex-col items-end min-h-0 md:min-h-[calc(100svh-120px)]">
           
           {/* LEFT COLUMN: Academic Illustration with curved wave and Islamic Header */}
-          <div className="w-full md:w-[46%] bg-gradient-to-br from-[#0284c7] via-[#0369a1] to-[#0f613c] relative overflow-hidden flex flex-col justify-between p-5 sm:p-7 text-white min-h-[220px] md:min-h-full">
+          <div className="hidden">
             <div className="absolute -top-12 -bottom-12 -right-16 w-36 bg-white hidden md:block rounded-l-[100%] pointer-events-none" />
 
             {/* Top Brand & Bismillah */}
@@ -113,21 +122,10 @@ export const LoginScreen: React.FC = () => {
           </div>
 
           {/* RIGHT COLUMN: Clean Login - ONLY Google Auth */}
-          <div className="w-full md:w-[54%] p-5 sm:p-8 flex flex-col justify-between bg-white text-slate-800">
+          <div className="w-full md:w-[48%] lg:w-[45%] max-w-[660px] p-5 sm:p-8 flex flex-col justify-center gap-4 bg-transparent text-slate-800 rounded-none shadow-none border-0 backdrop-blur-0">
             
             {/* Header & Brand Identity */}
             <div>
-              <div className="flex items-center gap-3 mb-2">
-                <UnisaEmblem size={44} />
-                <div>
-                  <h1 className="text-2xl sm:text-3xl font-extrabold font-islamic text-slate-900 tracking-tight leading-none flex items-center gap-1">
-                    Portal<span className="text-[#0f613c]">BPAIK</span>
-                  </h1>
-                  <p className="text-[10px] text-slate-500 font-bold uppercase tracking-wider mt-0.5">
-                    Universitas 'Aisyiyah Bandung
-                  </p>
-                </div>
-              </div>
 
               <p className="text-sm font-bold font-islamic text-emerald-950 mt-2 leading-snug">
                 Presensi Kegiatan Kajian dan Pembinaan Rutinan
@@ -288,21 +286,8 @@ export const LoginScreen: React.FC = () => {
           }}
         />
       )}
-
-      {/* Global Comprehensive Web Footer */}
-      <footer className="w-full max-w-5xl mx-auto mt-6 pt-4 border-t border-slate-700/60 text-slate-400 text-xs flex flex-col sm:flex-row items-center justify-between gap-2 z-10 text-center sm:text-left">
-        <div>
-          <p className="font-bold text-slate-300 font-islamic">
-            Badan Pengembangan Al-Islam & Kemuhammadiyahan (BPAIK)
-          </p>
-          <p className="text-[11px] text-slate-400">
-            kantor BPAIK UNISA Bandung • Gedung PESMA UNISA Bandung Jl. Terusan Rancagoong II No.1, Gumuruh, Kec. Batununggal, Kota Bandung 40275
-          </p>
-        </div>
-        <div className="text-[10px] text-slate-500 font-mono">
-          © 2026 PortalBPAIK UNISA Bandung. All rights reserved.
-        </div>
-      </footer>
+      {/* Footer resmi bersama halaman Admin dan Pegawai */}
+      <Footer />
     </div>
   );
 };
