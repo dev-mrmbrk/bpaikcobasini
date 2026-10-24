@@ -33,6 +33,7 @@ import { collection, query, where, onSnapshot, addDoc } from 'firebase/firestore
 import { db } from '../firebase';
 import { useAuth } from '../context/AuthContext';
 import { BPAIKUser, BPAIKEvent, AttendanceRecord, LeaveRequest } from '../types';
+import { getCardQrCredential } from '../utils/cardQr';
 import { SuratIzinPdfModal } from './SuratIzinPdfModal';
 import { downloadElementAsPdf } from '../utils/pdfExport';
 import { downloadCardElementAsJpg, generateCardCanvasJpg } from '../utils/cardExport';
@@ -119,7 +120,7 @@ export const PegawaiView: React.FC<PegawaiViewProps> = ({
 
   // Generate real QR code for digital card
   useEffect(() => {
-    const qrCodeValue = user.qrUniqueCode || `BPAIK-KARTU-${user.npp ? user.npp.replace(/[^a-zA-Z0-9]/g, '') : user.id}`;
+    const qrCodeValue = getCardQrCredential(user);
     QRCode.toDataURL(qrCodeValue, {
       width: 260,
       margin: 1,

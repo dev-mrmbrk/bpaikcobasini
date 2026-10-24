@@ -2,6 +2,8 @@ import React, { useState, useRef, useEffect } from 'react';
 import { Camera, X, AlertCircle, RefreshCw, CheckCircle2, CreditCard, ArrowRight, KeyRound, Sparkles } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { BPAIKUser } from '../types';
+import { BrowserQRCodeReader } from '@zxing/browser';
+import { normalizeCardQrPayload } from '../utils/cardQr';
 
 interface CardLoginModalProps {
   onClose: () => void;
@@ -21,124 +23,141 @@ export const CardLoginModal: React.FC<CardLoginModalProps> = ({
   const [showManualInput, setShowManualInput] = useState(false);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
+  const controlsRef = useRef<{ stop: () => void } | null>(null);
 
-  // Initialize camera for scanning participant ID card QR
+  // Scanner QR lintas browser, tidak bergantung pada BarcodeDetector.
   useEffect(() => {
     let active = true;
+    let handled = false;
+    let localControls: { stop: () => void } | null = null;
 
-    let scanInterval: any = null;
+    if (isVerifying || verifiedUser) {
+      return () => {
+        active = false;
+      };
+    }
 
     async function initCamera() {
       try {
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-          setCameraError('Kamera tidak didukung oleh browser Anda');
+        const videoElement = videoRef.current;
+
+        if (!navigator.mediaDevices?.getUserMedia || !videoElement) {
+          setCameraError('Kamera tidak didukung atau tidak tersedia di browser ini.');
           setShowManualInput(true);
           return;
         }
 
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment', width: { ideal: 640 }, height: { ideal: 640 } }
-        });
+        const reader = new BrowserQRCodeReader(
+          undefined,
+          { delayBetweenScanAttempts: 250 }
+        );
 
-        if (active) {
-          streamRef.current = stream;
-          if (videoRef.current) {
-            videoRef.current.srcObject = stream;
-            videoRef.current.play().catch(() => {});
-          }
-
-          // Real-time BarcodeDetector if supported by browser
-          if ('BarcodeDetector' in window) {
-            try {
-              const detector = new (window as any).BarcodeDetector({ formats: ['qr_code'] });
-              scanInterval = setInterval(async () => {
-                if (!videoRef.current || videoRef.current.readyState < 2 || isVerifying || verifiedUser) return;
-                try {
-                  const barcodes = await detector.detect(videoRef.current);
-                  if (barcodes && barcodes.length > 0 && barcodes[0].rawValue) {
-                    clearInterval(scanInterval);
-                    handleProcessCode(barcodes[0].rawValue);
-                  }
-                } catch (_) {}
-              }, 450);
-            } catch (detectorErr) {
-              console.warn('BarcodeDetector setup warning:', detectorErr);
+        const controls = await reader.decodeFromVideoDevice(
+          undefined,
+          videoElement,
+          (result, _error, scanControls) => {
+            if (!active || handled || isVerifying || verifiedUser || !result) {
+              return;
             }
+
+            const rawCode = result.getText()?.trim();
+            if (!rawCode) return;
+
+            handled = true;
+            scanControls.stop();
+            controlsRef.current = null;
+            void handleProcessCode(rawCode);
           }
+        );
+
+        localControls = controls;
+
+        if (!active || handled) {
+          controls.stop();
         } else {
-          stream.getTracks().forEach(t => t.stop());
+          controlsRef.current = controls;
         }
       } catch (err: unknown) {
+        if (!active) return;
+
         console.warn('Camera access for card login:', err);
-        setCameraError('Kamera tidak dapat diakses atau izin ditolak');
+        setCameraError(
+          'Kamera tidak dapat diakses. Pastikan izin kamera aktif dan situs memakai HTTPS.'
+        );
         setShowManualInput(true);
       }
     }
 
-    initCamera();
+    void initCamera();
 
     return () => {
       active = false;
-      if (scanInterval) clearInterval(scanInterval);
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(t => t.stop());
-        streamRef.current = null;
-      }
+      localControls?.stop();
+      controlsRef.current?.stop();
+      controlsRef.current = null;
     };
   }, [isVerifying, verifiedUser]);
 
   const handleProcessCode = async (rawCode: string) => {
-    if (!rawCode || !rawCode.trim()) return;
+    const codeToUse = normalizeCardQrPayload(rawCode);
+
+    if (!codeToUse) {
+      setScanError('QR tidak berisi kode kartu BPAIK yang dikenali.');
+      return;
+    }
+
     setIsVerifying(true);
     setScanError(null);
-
-    // Extract code if JSON payload
-    let codeToUse = rawCode.trim();
-    if (codeToUse.startsWith('{') && codeToUse.endsWith('}')) {
-      try {
-        const parsed = JSON.parse(codeToUse);
-        codeToUse = parsed.qrCode || parsed.qrUniqueCode || parsed.npp || parsed.id || codeToUse;
-      } catch (_) {}
-    }
 
     try {
       const user = await loginWithCardQr(codeToUse);
       setVerifiedUser(user);
-      setTimeout(() => {
+
+      window.setTimeout(() => {
         onSuccess(user);
       }, 900);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Kode kartu tidak valid';
+      const msg = err instanceof Error
+        ? err.message
+        : 'Kode kartu tidak valid';
+
       setScanError(msg);
     } finally {
       setIsVerifying(false);
     }
   };
 
-  // Upload card picture to scan QR
-  const handleUploadCardImage = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  // Membaca QR dari gambar kartu menggunakan decoder yang sama.
+  const handleUploadCardImage = async (
+    e: React.ChangeEvent<HTMLInputElement>
+  ) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if ('BarcodeDetector' in window) {
-      try {
-        const detector = new (window as any).BarcodeDetector({ formats: ['qr_code'] });
-        const img = new Image();
-        img.src = URL.createObjectURL(file);
-        await new Promise((res) => { img.onload = res; });
-        const barcodes = await detector.detect(img);
-        if (barcodes && barcodes.length > 0 && barcodes[0].rawValue) {
-          handleProcessCode(barcodes[0].rawValue);
-          return;
-        }
-      } catch (err) {
-        console.warn('Image detector notice:', err);
+    const imageUrl = URL.createObjectURL(file);
+
+    try {
+      const reader = new BrowserQRCodeReader();
+      const result = await reader.decodeFromImageUrl(imageUrl);
+      const rawCode = result.getText();
+
+      if (rawCode) {
+        await handleProcessCode(rawCode);
+        return;
       }
+    } catch (err) {
+      console.warn('QR image decoding notice:', err);
+    } finally {
+      URL.revokeObjectURL(imageUrl);
     }
-    setScanError('QR tidak terdeteksi otomatis pada gambar. Silakan gunakan tombol demo atau input teks kode.');
+
+    setScanError(
+      'QR tidak terbaca dari gambar. Coba foto yang lebih jelas atau pindai langsung dengan kamera.'
+    );
     setShowManualInput(true);
   };
+
+
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-md flex items-center justify-center p-3 sm:p-4 animate-in fade-in duration-200">
@@ -273,7 +292,7 @@ export const CardLoginModal: React.FC<CardLoginModalProps> = ({
                   <button
                     type="button"
                     disabled={isVerifying}
-                    onClick={() => handleProcessCode('NPP. 0422019800')}
+                    onClick={() => handleProcessCode('BPAIK-KARTU-NPP0422019800')}
                     className="tactile-3d-btn-white p-2 rounded-xl text-left cursor-pointer flex flex-col items-start border border-slate-200 disabled:opacity-50"
                   >
                     <span className="text-xs font-bold text-[#0f613c] font-islamic flex items-center gap-1">
@@ -295,7 +314,7 @@ export const CardLoginModal: React.FC<CardLoginModalProps> = ({
                     onClick={() => setShowManualInput(true)}
                     className="w-full text-center text-xs text-[#0284c7] hover:underline font-bold py-1 cursor-pointer"
                   >
-                    Punya kode QR atau NPP tertulis? Klik di sini
+                    Punya isi QR kartu tertulis? Klik di sini
                   </button>
                 ) : (
                   <form
@@ -306,12 +325,12 @@ export const CardLoginModal: React.FC<CardLoginModalProps> = ({
                     className="mt-2 space-y-2 bg-slate-50 p-2.5 rounded-xl border border-slate-200"
                   >
                     <label className="block text-[11px] font-bold text-slate-700">
-                      Masukkan Kode QR Kartu atau NPP:
+                      Masukkan Kode QR Kartu Peserta:
                     </label>
                     <div className="flex gap-2">
                       <input
                         type="text"
-                        placeholder="contoh: 0415038102 atau BPAIK-KARTU-..."
+                        placeholder="contoh: BPAIK-KARTU-..."
                         value={manualCode}
                         onChange={(e) => setManualCode(e.target.value)}
                         className="flex-1 p-2 bg-white border border-slate-300 rounded-lg text-xs font-mono focus:outline-emerald-600"

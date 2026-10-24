@@ -3,6 +3,7 @@ import { User as FirebaseUser, signInWithPopup, signOut, onAuthStateChanged, set
 import { doc, getDoc, setDoc, collection, query, where, getDocs, addDoc, updateDoc } from 'firebase/firestore';
 import { auth, db, googleProvider, seedInitialData } from '../firebase';
 import { BPAIKUser, UserRole } from '../types';
+import { normalizeCardQrPayload, getCardQrCredential } from '../utils/cardQr';
 
 interface AuthContextType {
   firebaseUser: FirebaseUser | null;
@@ -227,139 +228,62 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const loginWithCardQr = async (rawCode: string): Promise<BPAIKUser> => {
     setIsLoading(true);
     setError(null);
-    const code = rawCode.trim();
-
-    // Normalization variations for matching
-    const cleanAlpha = code.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-    const cleanDigits = code.replace(/\D/g, '');
 
     try {
-      let targetUser: BPAIKUser | null = null;
+      const code = normalizeCardQrPayload(rawCode);
 
-      // 1. Try querying Firestore with multiple conditions safely
-      try {
-        const usersRef = collection(db, 'users');
-
-        // Query 1: exact qrUniqueCode match
-        const qQr = query(usersRef, where('qrUniqueCode', '==', code));
-        const snapQr = await getDocs(qQr);
-        if (!snapQr.empty) {
-          targetUser = { ...snapQr.docs[0].data(), id: snapQr.docs[0].id } as BPAIKUser;
-        }
-
-        // Query 2: exact npp match
-        if (!targetUser) {
-          const qNpp = query(usersRef, where('npp', '==', code));
-          const snapNpp = await getDocs(qNpp);
-          if (!snapNpp.empty) {
-            targetUser = { ...snapNpp.docs[0].data(), id: snapNpp.docs[0].id } as BPAIKUser;
-          }
-        }
-
-        // Query 3: direct doc ID match
-        if (!targetUser) {
-          try {
-            const docSnap = await getDoc(doc(db, 'users', code));
-            if (docSnap.exists()) {
-              targetUser = { ...docSnap.data(), id: docSnap.id } as BPAIKUser;
-            }
-          } catch (_) {
-            // ignore doc id lookup error
-          }
-        }
-
-        // Query 4: broad scan if not found yet
-        if (!targetUser) {
-          const allSnap = await getDocs(usersRef);
-          allSnap.forEach(d => {
-            if (targetUser) return;
-            const u = { ...d.data(), id: d.id } as BPAIKUser;
-            const uQrClean = (u.qrUniqueCode || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-            const uNppClean = (u.npp || '').replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-            const uNppDigits = (u.npp || '').replace(/\D/g, '');
-            const uIdClean = u.id.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
-            const uEmail = (u.email || '').toLowerCase();
-
-            if (
-              (u.qrUniqueCode && u.qrUniqueCode === code) ||
-              (uQrClean && (uQrClean === cleanAlpha || cleanAlpha.includes(uQrClean) || uQrClean.includes(cleanAlpha))) ||
-              (uNppClean && (uNppClean === cleanAlpha || cleanAlpha.includes(uNppClean))) ||
-              (cleanDigits.length >= 6 && uNppDigits && (cleanDigits === uNppDigits || cleanDigits.includes(uNppDigits) || uNppDigits.includes(cleanDigits))) ||
-              uIdClean === cleanAlpha ||
-              uEmail === code.toLowerCase()
-            ) {
-              targetUser = u;
-            }
-          });
-        }
-      } catch (firestoreErr) {
-        console.warn('Firestore read notice during card login, falling back to local registry:', firestoreErr);
+      if (!code) {
+        throw new Error("QR tidak berisi kode kartu BPAIK yang valid.");
       }
 
-      // 2. Built-in system registry fallback (Hamzah, Admin BPAIK, etc.)
-      if (!targetUser) {
-        const isHamzah = 
-          cleanDigits.includes('0415038102') || 
-          cleanAlpha.includes('hamzah') || 
-          cleanAlpha.includes('0415038102') ||
-          code.includes('0415038102') ||
-          code.toLowerCase().includes('hamzah');
+      // Cari akun berdasarkan nilai yang sama dengan generator QR kartu.
+      // NPP biasa, email, ID pengguna, dan teks "admin" tidak diterima
+      // sebagai pengganti kode QR.
+      const snapshot = await getDocs(collection(db, "users"));
+      const matches: BPAIKUser[] = [];
 
-        const isAdmin = 
-          cleanDigits.includes('0422019800') || 
-          cleanAlpha.includes('admin') || 
-          cleanAlpha.includes('0422019800') ||
-          code.includes('0422019800') ||
-          code.toLowerCase().includes('admin');
+      snapshot.forEach((entry) => {
+        const account = {
+          ...entry.data(),
+          id: entry.id
+        } as BPAIKUser;
 
-        if (isHamzah) {
-          targetUser = {
-            id: 'peserta_hamzah',
-            email: 'peserta.bpaik@gmail.com',
-            name: 'Dr. H. Hamzah Arifin, M.Ag.',
-            npp: 'NPP. 0415038102',
-            jabatan: 'Dosen / Peserta Kajian',
-            whatsapp: '081234567890',
-            avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=300&q=80',
-            role: 'PESERTA',
-            qrUniqueCode: 'BPAIK-KARTU-0415038102-HAMZAH',
-            status: 'aktif',
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-          };
-        } else if (isAdmin) {
-          targetUser = {
-            id: 'admin_bpaik',
-            email: 'admin.bpaik@unisa-bandung.ac.id',
-            name: 'Admin Utama BPAIK',
-            npp: 'NPP. 0422019800',
-            jabatan: 'Administrator BPAIK',
-            whatsapp: '081223344550',
-            role: 'ADMIN',
-            status: 'aktif',
-            qrUniqueCode: 'BPAIK-KARTU-0422019800-ADMIN',
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-          };
+        if (getCardQrCredential(account) === code) {
+          matches.push(account);
         }
+      });
+
+      if (matches.length === 0) {
+        throw new Error(
+          "Kode QR tidak ditemukan. Pastikan kartu terdaftar dan QR-nya berasal dari kartu BPAIK yang benar."
+        );
       }
 
-      if (!targetUser) {
-        throw new Error(`Kartu dengan kode "${code}" tidak ditemukan. Pastikan QR atau kode NPP valid.`);
+      if (matches.length > 1) {
+        throw new Error(
+          "Kode QR digunakan oleh lebih dari satu akun. Hubungi Admin BPAIK."
+        );
       }
 
-      if (targetUser.status !== 'aktif') {
-        throw new Error(`Akun kartu "${targetUser.name}" berstatus ${targetUser.status.toUpperCase()}. Silakan hubungi Admin BPAIK.`);
+      const targetUser = matches[0];
+
+      if (targetUser.status !== "aktif") {
+        throw new Error(
+          `Akun kartu "${targetUser.name}" berstatus NONAKTIF. Hubungi Admin BPAIK.`
+        );
       }
 
       setBpaikUser(targetUser);
       persistUser(targetUser);
+
       return targetUser;
     } catch (err: unknown) {
-      console.error('Login with Card QR error:', err);
-      const msg = err instanceof Error ? err.message : 'Gagal memindai kartu peserta';
-      setError(msg);
-      throw err;
+      const message = err instanceof Error
+        ? err.message
+        : "Gagal memverifikasi QR kartu peserta.";
+
+      setError(message);
+      throw new Error(message);
     } finally {
       setIsLoading(false);
     }

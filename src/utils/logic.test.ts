@@ -79,3 +79,51 @@ test('Signature stroke validation checks emptiness and stroke length', () => {
   assert.ok(validRes.pointCount >= 10);
   assert.ok(validRes.totalLength >= 30);
 });
+
+import {
+  getCardQrCredential,
+  normalizeCardQrPayload
+} from './cardQr';
+
+test('Card QR supports plain text and structured JSON payloads', () => {
+  const credential = 'BPAIK-KARTU-0415038102-HAMZAH';
+
+  assert.equal(normalizeCardQrPayload(credential), credential);
+  assert.equal(
+    normalizeCardQrPayload(JSON.stringify({ qrUniqueCode: credential })),
+    credential
+  );
+  assert.equal(
+    normalizeCardQrPayload(JSON.stringify({ data: { qrCode: credential } })),
+    credential
+  );
+});
+
+test('Card QR does not treat plain NPP or user ID as a credential', () => {
+  assert.equal(
+    normalizeCardQrPayload(JSON.stringify({
+      id: 'peserta_123',
+      npp: 'NPP. 0415038102'
+    })),
+    ''
+  );
+});
+
+test('Card QR generator and legacy fallback use a consistent format', () => {
+  assert.equal(
+    getCardQrCredential({
+      id: 'user-1',
+      npp: 'NPP. 0422019800'
+    }),
+    'BPAIK-KARTU-NPP0422019800'
+  );
+
+  assert.equal(
+    getCardQrCredential({
+      id: 'peserta_hamzah',
+      npp: 'NPP. 0415038102',
+      qrUniqueCode: 'BPAIK-KARTU-0415038102-HAMZAH'
+    }),
+    'BPAIK-KARTU-0415038102-HAMZAH'
+  );
+});

@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { X, Printer, QrCode as QrIcon, CheckCircle2, ShieldCheck, Download, CreditCard, Loader2, Image as ImageIcon } from 'lucide-react';
 import QRCode from 'qrcode';
 import { BPAIKUser } from '../types';
+import { getCardQrCredential } from '../utils/cardQr';
 import { downloadElementAsPdf } from '../utils/pdfExport';
 import { downloadCardElementAsJpg, generateCardCanvasJpg } from '../utils/cardExport';
 import { UnisaEmblem } from './Footer';
@@ -36,7 +37,7 @@ export const ParticipantCardModal: React.FC<ParticipantCardModalProps> = ({
 
       for (const u of targets) {
         try {
-          const code = u.qrUniqueCode || `BPAIK-KARTU-${(u.npp || u.id).replace(/[^a-zA-Z0-9]/g, '')}`;
+          const code = getCardQrCredential(u);
           const dataUrl = await QRCode.toDataURL(code, {
             width: 260,
             margin: 1,
