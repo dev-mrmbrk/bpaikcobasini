@@ -1,9 +1,30 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
-import { User as FirebaseUser, signInWithPopup, signOut, onAuthStateChanged, setPersistence, browserLocalPersistence, browserSessionPersistence } from 'firebase/auth';
-import { doc, getDoc, setDoc, collection, query, where, getDocs, addDoc, updateDoc } from 'firebase/firestore';
-import { auth, db, googleProvider, seedInitialData } from '../firebase';
-import { BPAIKUser, UserRole } from '../types';
-import { normalizeCardQrPayload, getCardQrCredential } from '../utils/cardQr';
+import React, {
+  createContext,
+  useContext,
+  useEffect,
+  useRef,
+  useState
+} from 'react';
+
+import {
+  User as FirebaseUser,
+  signInWithPopup,
+  signOut,
+  onAuthStateChanged,
+  setPersistence,
+  browserLocalPersistence,
+  browserSessionPersistence
+} from 'firebase/auth';
+
+import { auth, googleProvider } from '../firebase';
+import { BPAIKUser } from '../types';
+import { normalizeCardQrPayload } from '../utils/cardQr';
+
+interface AuthApiResponse {
+  success?: boolean;
+  error?: string;
+  user?: BPAIKUser;
+}
 
 interface AuthContextType {
   firebaseUser: FirebaseUser | null;
@@ -11,13 +32,47 @@ interface AuthContextType {
   isLoading: boolean;
   error: string | null;
   rememberMe: boolean;
-  setRememberMe: (val: boolean) => void;
+  setRememberMe: (value: boolean) => void;
   loginWithGoogle: () => Promise<void>;
-  loginAsDemo: (role: 'ADMIN' | 'PESERTA') => Promise<void>;
   loginWithCardQr: (qrCode: string) => Promise<BPAIKUser>;
   updateUserProfile: (data: Partial<BPAIKUser>) => Promise<void>;
   logout: () => Promise<void>;
   clearError: () => void;
+}
+
+async function readApiResponse(
+  response: Response
+): Promise<AuthApiResponse> {
+  try {
+    return await response.json() as AuthApiResponse;
+  } catch {
+    return {};
+  }
+}
+
+async function authenticateGoogleUser(
+  user: FirebaseUser
+): Promise<BPAIKUser> {
+  const idToken = await user.getIdToken();
+
+  const response = await fetch('/api/auth/google', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ idToken })
+  });
+
+  const result = await readApiResponse(response);
+
+  if (!response.ok || !result.success || !result.user) {
+    throw new Error(
+      result.error || 'Server gagal memverifikasi akun Google melalui D1.'
+    );
+  }
+
+  return result.user;
 }
 
 const AuthContext = createContext<AuthContextType>({
@@ -28,8 +83,9 @@ const AuthContext = createContext<AuthContextType>({
   rememberMe: true,
   setRememberMe: () => {},
   loginWithGoogle: async () => {},
-  loginAsDemo: async () => {},
-  loginWithCardQr: async () => { throw new Error('Not implemented'); },
+  loginWithCardQr: async () => {
+    throw new Error('Login QR belum tersedia.');
+  },
   updateUserProfile: async () => {},
   logout: async () => {},
   clearError: () => {}
@@ -37,250 +93,194 @@ const AuthContext = createContext<AuthContextType>({
 
 export const useAuth = () => useContext(AuthContext);
 
-export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
-  const [rememberMe, setRememberMeState] = useState<boolean>(true);
-
-  const [firebaseUser, setFirebaseUser] = useState<FirebaseUser | null>(null);
-  const [bpaikUser, setBpaikUser] = useState<BPAIKUser | null>(null);
-
-  const [isLoading, setIsLoading] = useState<boolean>(true);
+export const AuthProvider: React.FC<{
+  children: React.ReactNode
+}> = ({ children }) => {
+  const [rememberMe, setRememberMeState] = useState(true);
+  const [firebaseUser, setFirebaseUser] =
+    useState<FirebaseUser | null>(null);
+  const [bpaikUser, setBpaikUser] =
+    useState<BPAIKUser | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const setRememberMe = (val: boolean) => {
-    setRememberMeState(val);
+  const requestSequence = useRef(0);
+
+  const setRememberMe = (value: boolean) => {
+    setRememberMeState(value);
   };
 
-  // Zero localStorage: sync active session to Cloudflare D1 database (pbaik-absensi-data)
-  const persistUser = (userData: BPAIKUser) => {
-    fetch('/api/d1/query', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        table: 'users',
-        action: 'upsert',
-        id: userData.id,
-        record: userData
-      })
-    }).catch(e => console.warn('D1 user sync notice:', e));
-  };
-
-  const clearPersistedUser = () => {
-    // zero localStorage
-  };
-
+  // Restore a server session on page load. When Firebase Google Auth
+  // is present, the Worker verifies its ID token and loads the D1 profile.
   useEffect(() => {
-    seedInitialData();
+    let active = true;
 
-    const unsubscribe = onAuthStateChanged(auth, async (user) => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      const sequence = ++requestSequence.current;
       setIsLoading(true);
-      setError(null);
 
-      if (!user) {
-        setFirebaseUser(null);
-        setBpaikUser(null);
-        setIsLoading(false);
-        return;
-      }
+      const restore = async () => {
+        if (user) {
+          try {
+            const profile = await authenticateGoogleUser(user);
 
-      setFirebaseUser(user);
-      const email = user.email?.toLowerCase();
+            if (!active || sequence !== requestSequence.current) return;
 
-      try {
-        const q = query(collection(db, 'users'), where('email', '==', email));
-        const snap = await getDocs(q);
+            setFirebaseUser(user);
+            setBpaikUser(profile);
+            setError(null);
+          } catch (err: unknown) {
+            if (!active || sequence !== requestSequence.current) return;
 
-        if (!snap.empty) {
-          const userData = snap.docs[0].data() as BPAIKUser;
-          if (userData.status !== 'aktif') {
-            await signOut(auth);
-            clearPersistedUser();
-            setBpaikUser(null);
-            setError(`Akun pegawai ${email} berstatus NONAKTIF. Hubungi Admin BPAIK.`);
-            setIsLoading(false);
-            return;
-          }
-          setBpaikUser(userData);
-          persistUser(userData);
-        } else {
-          // Check if this is a bootstrapped admin
-          if (email === 'ridhwanmujahidin01@gmail.com' || email === 'eungeunyoon@gmail.com' || email === 'ridhwan.mbrk@gmail.com') {
-            const adminProfile: BPAIKUser = {
-              id: user.uid,
-              email: email,
-              name: user.displayName || (email === 'ridhwanmujahidin01@gmail.com' ? 'Ridhwan Mujahidin (Admin BPAIK)' : (email === 'eungeunyoon@gmail.com' ? 'Admin Utama BPAIK' : 'Ridhwan Mubarak, S.Ag., M.Ag.')),
-              npp: 'NPP. 0422019800',
-              jabatan: 'Administrator BPAIK',
-              whatsapp: '081223344550',
-              role: 'ADMIN',
-              status: 'aktif',
-              createdAt: new Date().toISOString(),
-              updatedAt: new Date().toISOString()
-            };
-            await setDoc(doc(db, 'users', user.uid), adminProfile);
-            setBpaikUser(adminProfile);
-            persistUser(adminProfile);
-          } else {
-            await addDoc(collection(db, 'auditLogs'), {
-              action: 'LOGIN_UNAUTHORIZED',
-              actorEmail: email || 'unknown',
-              actorName: user.displayName || 'Pengguna Tidak Terdaftar',
-              actorRole: 'GUEST',
-              targetType: 'AUTH',
-              targetId: user.uid,
-              description: `Percobaan masuk gagal: Email ${email} tidak tercatat di daftar resmi BPAIK UNISA Bandung`,
-              timestamp: new Date().toISOString()
-            });
-
-            await signOut(auth);
-            clearPersistedUser();
             setFirebaseUser(null);
             setBpaikUser(null);
-            setError(`Akun Google (${email}) tidak terdaftar dalam data resmi BPAIK UNISA Bandung.`);
+            setError(
+              err instanceof Error
+                ? err.message
+                : 'Gagal memverifikasi akun Google.'
+            );
+
+            // A Google identity with no eligible D1 profile must not
+            // remain authenticated in the client.
+            await signOut(auth).catch(() => {});
+          }
+        } else {
+          setFirebaseUser(null);
+
+          try {
+            const response = await fetch('/api/auth/me', {
+              method: 'GET',
+              credentials: 'same-origin',
+              cache: 'no-store'
+            });
+
+            const result = await readApiResponse(response);
+
+            if (!active || sequence !== requestSequence.current) return;
+
+            if (response.ok && result.success && result.user) {
+              setBpaikUser(result.user);
+              setError(null);
+            } else {
+              setBpaikUser(null);
+
+              if (response.status !== 401) {
+                setError(
+                  result.error || 'Server gagal memulihkan sesi login.'
+                );
+              }
+            }
+          } catch {
+            if (!active || sequence !== requestSequence.current) return;
+
+            setBpaikUser(null);
+            setError(
+              'Server autentikasi tidak dapat dijangkau. Periksa koneksi dan konfigurasi Worker.'
+            );
           }
         }
-      } catch (err: unknown) {
-        console.error('Auth check error:', err);
-        setError('Gagal memverifikasi status pengguna di server BPAIK.');
-      } finally {
-        setIsLoading(false);
-      }
+      };
+
+      void restore().finally(() => {
+        if (active && sequence === requestSequence.current) {
+          setIsLoading(false);
+        }
+      });
     });
 
-    return () => unsubscribe();
-  }, [rememberMe]);
+    return () => {
+      active = false;
+      requestSequence.current++;
+      unsubscribe();
+    };
+  }, []);
 
   const loginWithGoogle = async () => {
     setIsLoading(true);
     setError(null);
+
     try {
-      clearPersistedUser();
-      // Set persistence based on rememberMe checkbox
-      try {
-        await setPersistence(auth, rememberMe ? browserLocalPersistence : browserSessionPersistence);
-      } catch (e) {
-        // persistence fallback if in strict iframe
+      await setPersistence(
+        auth,
+        rememberMe ? browserLocalPersistence : browserSessionPersistence
+      ).catch(() => {
+        // Some embedded browsers do not allow changing persistence.
+      });
+
+      const credential = await signInWithPopup(auth, googleProvider);
+      const sequence = ++requestSequence.current;
+      const profile = await authenticateGoogleUser(credential.user);
+
+      if (sequence === requestSequence.current) {
+        setFirebaseUser(credential.user);
+        setBpaikUser(profile);
       }
-      await signInWithPopup(auth, googleProvider);
     } catch (err: unknown) {
-      console.error('Login popup error:', err);
-      const msg = err instanceof Error ? err.message : 'Gagal melakukan login Google';
-      if (!msg.includes('popup-closed-by-user')) {
-        setError(msg);
-      }
-      setIsLoading(false);
-    }
-  };
+      const message = err instanceof Error
+        ? err.message
+        : 'Gagal melakukan login Google.';
 
-  const loginAsDemo = async (role: 'ADMIN' | 'PESERTA') => {
-    setIsLoading(true);
-    setError(null);
-    const fallbackUser: BPAIKUser = role === 'ADMIN' ? {
-      id: 'admin_bpaik',
-      email: 'admin.bpaik@unisa-bandung.ac.id',
-      name: 'Admin Utama BPAIK',
-      npp: 'NPP. 0422019800',
-      jabatan: 'Administrator BPAIK',
-      whatsapp: '081223344550',
-      role: 'ADMIN',
-      status: 'aktif',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    } : {
-      id: 'peserta_hamzah',
-      email: 'peserta.bpaik@gmail.com',
-      name: 'Dr. H. Hamzah Arifin, M.Ag.',
-      npp: 'NPP. 0415038102',
-      jabatan: 'Dosen / Peserta Kajian',
-      whatsapp: '081234567890',
-      avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=300&q=80',
-      role: 'PESERTA',
-      qrUniqueCode: 'BPAIK-KARTU-0415038102-HAMZAH',
-      status: 'aktif',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
-
-    try {
-      const docId = role === 'ADMIN' ? 'admin_bpaik' : 'peserta_hamzah';
-      const snap = await getDoc(doc(db, 'users', docId));
-      if (snap.exists()) {
-        const u = snap.data() as BPAIKUser;
-        setBpaikUser(u);
-        persistUser(u);
-      } else {
-        try {
-          await setDoc(doc(db, 'users', docId), fallbackUser);
-        } catch (writeErr) {
-          console.warn('Notice writing demo user to Firestore:', writeErr);
-        }
-        setBpaikUser(fallbackUser);
-        persistUser(fallbackUser);
+      if (!message.includes('popup-closed-by-user')) {
+        setError(message);
       }
-    } catch (err) {
-      console.warn('Demo login Firestore read notice, using local fallback:', err);
-      setBpaikUser(fallbackUser);
-      persistUser(fallbackUser);
+
+      await signOut(auth).catch(() => {});
+      setFirebaseUser(null);
+      setBpaikUser(null);
     } finally {
       setIsLoading(false);
     }
   };
 
-  const loginWithCardQr = async (rawCode: string): Promise<BPAIKUser> => {
+  const loginWithCardQr = async (
+    rawCode: string
+  ): Promise<BPAIKUser> => {
     setIsLoading(true);
     setError(null);
 
     try {
+      // QR must match a credential stored in D1. No demo-account,
+      // arbitrary NPP, email, or client-defined role fallback is used.
       const code = normalizeCardQrPayload(rawCode);
 
       if (!code) {
-        throw new Error("QR tidak berisi kode kartu BPAIK yang valid.");
+        throw new Error('QR tidak berisi kredensial kartu yang valid.');
       }
 
-      // Cari akun berdasarkan nilai yang sama dengan generator QR kartu.
-      // NPP biasa, email, ID pengguna, dan teks "admin" tidak diterima
-      // sebagai pengganti kode QR.
-      const snapshot = await getDocs(collection(db, "users"));
-      const matches: BPAIKUser[] = [];
+      // Switching from a previous Google login to a card identity.
+      if (auth.currentUser) {
+        await signOut(auth);
+      }
 
-      snapshot.forEach((entry) => {
-        const account = {
-          ...entry.data(),
-          id: entry.id
-        } as BPAIKUser;
+      const sequence = ++requestSequence.current;
 
-        if (getCardQrCredential(account) === code) {
-          matches.push(account);
-        }
+      const response = await fetch('/api/auth/card', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ code })
       });
 
-      if (matches.length === 0) {
+      const result = await readApiResponse(response);
+
+      if (!response.ok || !result.success || !result.user) {
         throw new Error(
-          "Kode QR tidak ditemukan. Pastikan kartu terdaftar dan QR-nya berasal dari kartu BPAIK yang benar."
+          result.error || 'QR tidak terdaftar di database D1.'
         );
       }
 
-      if (matches.length > 1) {
-        throw new Error(
-          "Kode QR digunakan oleh lebih dari satu akun. Hubungi Admin BPAIK."
-        );
+      if (sequence === requestSequence.current) {
+        setFirebaseUser(null);
+        setBpaikUser(result.user);
       }
 
-      const targetUser = matches[0];
-
-      if (targetUser.status !== "aktif") {
-        throw new Error(
-          `Akun kartu "${targetUser.name}" berstatus NONAKTIF. Hubungi Admin BPAIK.`
-        );
-      }
-
-      setBpaikUser(targetUser);
-      persistUser(targetUser);
-
-      return targetUser;
+      return result.user;
     } catch (err: unknown) {
       const message = err instanceof Error
         ? err.message
-        : "Gagal memverifikasi QR kartu peserta.";
+        : 'Gagal memverifikasi QR kartu.';
 
       setError(message);
       throw new Error(message);
@@ -289,35 +289,61 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const updateUserProfile = async (data: Partial<BPAIKUser>) => {
-    if (!bpaikUser) return;
-    try {
-      const updated = {
-        ...bpaikUser,
-        ...data,
-        updatedAt: new Date().toISOString()
-      };
-      await updateDoc(doc(db, 'users', bpaikUser.id), updated);
-      setBpaikUser(updated);
-      persistUser(updated);
-    } catch (err) {
-      console.error('Update profile error:', err);
-      throw err;
+  const updateUserProfile = async (
+    data: Partial<BPAIKUser>
+  ) => {
+    if (!bpaikUser) {
+      throw new Error('Tidak ada sesi pengguna yang aktif.');
     }
+
+    const response = await fetch('/api/auth/profile', {
+      method: 'PUT',
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        name: data.name,
+        jabatan: data.jabatan,
+        whatsapp: data.whatsapp,
+        avatarUrl: data.avatarUrl
+      })
+    });
+
+    const result = await readApiResponse(response);
+
+    if (!response.ok || !result.success || !result.user) {
+      throw new Error(
+        result.error || 'Gagal menyimpan profil ke D1.'
+      );
+    }
+
+    setBpaikUser(result.user);
   };
 
   const logout = async () => {
     setIsLoading(true);
+    ++requestSequence.current;
+
     try {
-      clearPersistedUser();
-      await signOut(auth);
-      setFirebaseUser(null);
-      setBpaikUser(null);
-    } catch (err) {
-      console.error('Logout error:', err);
-    } finally {
-      setIsLoading(false);
+      await fetch('/api/auth/logout', {
+        method: 'POST',
+        credentials: 'same-origin'
+      });
+    } catch {
+      // Continue clearing client auth even if the endpoint is unreachable.
     }
+
+    try {
+      await signOut(auth);
+    } catch {
+      // QR-only sessions have no Firebase user to sign out.
+    }
+
+    setFirebaseUser(null);
+    setBpaikUser(null);
+    setError(null);
+    setIsLoading(false);
   };
 
   return (
@@ -330,7 +356,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         rememberMe,
         setRememberMe,
         loginWithGoogle,
-        loginAsDemo,
         loginWithCardQr,
         updateUserProfile,
         logout,

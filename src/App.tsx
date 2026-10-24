@@ -9,75 +9,6 @@ import { QrScannerModal } from './components/QrScannerModal';
 import { AttendanceSuccessModal } from './components/AttendanceSuccessModal';
 import { SignaturePadModal } from './components/SignaturePadModal';
 import { BPAIKEvent, AttendanceRecord, BPAIKUser, AuditLog } from './types';
-import { db } from './firebase';
-import { collection, onSnapshot } from 'firebase/firestore';
-
-const todayYmd = new Date().toISOString().split('T')[0];
-const DEFAULT_EVENTS: BPAIKEvent[] = [
-  {
-    id: 'ev_kajian_rutin_tarjih',
-    title: 'Kajian Rutin Tarjih & Pembinaan Civitas Akademika',
-    description: 'Kajian rutin pendalaman Fiqih Ibadah Praktis sesuai HPT Muhammadiyah, pembinaan akhlaqul karimah, serta penguatan komitmen civitas akademika Universitas \'Aisyiyah Bandung dalam menegakkan nilai-nilai Al-Islam dan Kemuhammadiyahan di lingkungan kerja.',
-    startDateTime: `${todayYmd}T08:30`,
-    endDateTime: `${todayYmd}T11:45`,
-    date: todayYmd,
-    startTime: '08:30',
-    endTime: '11:45',
-    location: 'Masjid Kampus Utama Universitas \'Aisyiyah Bandung & Hall Ahmad Dahlan',
-    createdBy: 'admin.bpaik@unisa-bandung.ac.id',
-    creatorName: 'Admin Utama BPAIK',
-    status: 'berlangsung',
-    sessionDurationMinutes: 60,
-    sessionStatus: 'aktif',
-    sessionOpenedAt: new Date().toISOString(),
-    sessionClosedAt: null,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  },
-  {
-    id: 'ev_baitul_arqam_2026',
-    title: 'Baitul Arqam Dosen & Tenaga Kependidikan Angkatan VIII',
-    description: 'Penguatan Ideologi Al-Islam dan Kemuhammadiyahan bagi civitas akademika Universitas \'Aisyiyah Bandung di era transformasi digital.',
-    startDateTime: `${todayYmd}T07:30`,
-    endDateTime: `${todayYmd}T17:00`,
-    date: todayYmd,
-    startTime: '07:30',
-    endTime: '17:00',
-    location: 'Auditorium KH. Ahmad Dahlan, Gedung Rektorat Lt. 4',
-    createdBy: 'admin.bpaik@unisa-bandung.ac.id',
-    creatorName: 'Admin Utama BPAIK',
-    status: 'dijadwalkan',
-    sessionDurationMinutes: 90,
-    sessionStatus: 'belum_dibuka',
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  }
-];
-
-const DEFAULT_EMPLOYEES: BPAIKUser[] = [
-  {
-    id: 'admin_bpaik',
-    email: 'admin.bpaik@unisa-bandung.ac.id',
-    name: 'Admin Utama BPAIK',
-    npp: 'NPP. 0422019800',
-    jabatan: 'Administrator BPAIK',
-    whatsapp: '081223344550',
-    role: 'ADMIN',
-    status: 'aktif'
-  },
-  {
-    id: 'peserta_hamzah',
-    email: 'peserta.bpaik@gmail.com',
-    name: 'Dr. H. Hamzah Arifin, M.Ag.',
-    npp: 'NPP. 0415038102',
-    jabatan: 'Dosen / Peserta Kajian',
-    whatsapp: '081234567890',
-    avatarUrl: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=300&q=80',
-    role: 'PESERTA',
-    qrUniqueCode: 'BPAIK-KARTU-0415038102-HAMZAH',
-    status: 'aktif'
-  }
-];
 
 // Always scroll to top when route changes: "buka antar halaman mulai dari atas"
 function ScrollToTop() {
@@ -125,10 +56,21 @@ function MainAppContent() {
   const location = useLocation();
 
   // Firestore collections state with rich defaults
-  const [events, setEvents] = useState<BPAIKEvent[]>(DEFAULT_EVENTS);
-  const [employees, setEmployees] = useState<BPAIKUser[]>(DEFAULT_EMPLOYEES);
+  const [events, setEvents] = useState<BPAIKEvent[]>([]);
+  const [employees, setEmployees] = useState<BPAIKUser[]>([]);
   const [attendanceRecords, setAttendanceRecords] = useState<AttendanceRecord[]>([]);
   const [auditLogs, setAuditLogs] = useState<AuditLog[]>([]);
+  const [eventsReloadKey, setEventsReloadKey] = useState(0);
+  const [usersReloadKey, setUsersReloadKey] = useState(0);
+  const [attendanceReloadKey, setAttendanceReloadKey] = useState(0);
+  const [auditReloadKey, setAuditReloadKey] = useState(0);
+
+  const refreshAppData = () => {
+    setEventsReloadKey(value => value + 1);
+    setUsersReloadKey(value => value + 1);
+    setAttendanceReloadKey(value => value + 1);
+    setAuditReloadKey(value => value + 1);
+  };
 
   // Modals & Flows
   const [isScannerOpen, setIsScannerOpen] = useState(false);
@@ -159,49 +101,156 @@ function MainAppContent() {
     }
   }, [bpaikUser, navigate, location.pathname]);
 
-  // Sync Events
+  // Sync Events from Cloudflare Worker / D1
   useEffect(() => {
-    const unsub = onSnapshot(collection(db, 'events'), (snapshot) => {
-      const list: BPAIKEvent[] = [];
-      snapshot.forEach(doc => list.push({ ...(doc.data() as BPAIKEvent), id: doc.id }));
-      list.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-      if (list.length > 0) setEvents(list);
-    }, (err) => console.warn('Events sync notice (using defaults if offline):', err.message));
-    return () => unsub();
-  }, []);
+    if (!bpaikUser) {
+      setEvents([]);
+      return;
+    }
 
-  // Sync Employees
-  useEffect(() => {
-    const unsub = onSnapshot(collection(db, 'users'), (snapshot) => {
-      const list: BPAIKUser[] = [];
-      snapshot.forEach(doc => list.push({ ...(doc.data() as BPAIKUser), id: doc.id }));
-      list.sort((a, b) => a.name.localeCompare(b.name));
-      if (list.length > 0) setEmployees(list);
-    }, (err) => console.warn('Users sync notice (using defaults if offline):', err.message));
-    return () => unsub();
-  }, []);
+    const controller = new AbortController();
 
-  // Sync Attendance Records
-  useEffect(() => {
-    const unsub = onSnapshot(collection(db, 'attendanceRecords'), (snapshot) => {
-      const list: AttendanceRecord[] = [];
-      snapshot.forEach(doc => list.push({ ...(doc.data() as AttendanceRecord), id: doc.id }));
-      list.sort((a, b) => new Date(b.scanTime).getTime() - new Date(a.scanTime).getTime());
-      setAttendanceRecords(list);
-    }, (err) => console.warn('Attendance sync notice:', err.message));
-    return () => unsub();
-  }, []);
+    const loadEvents = async () => {
+      try {
+        const response = await fetch('/api/events', {
+          method: 'GET',
+          credentials: 'same-origin',
+          signal: controller.signal
+        });
 
-  // Sync Audit Logs
+        const payload = await response.json() as {
+          success?: boolean;
+          events?: BPAIKEvent[];
+          error?: string;
+        };
+
+        if (!response.ok || payload.success !== true || !Array.isArray(payload.events)) {
+          throw new Error(payload.error || 'Gagal mengambil kegiatan dari D1.');
+        }
+
+        const list = [...payload.events].sort(
+          (a, b) => b.date.localeCompare(a.date)
+        );
+        setEvents(list);
+      } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') return;
+        console.error('D1 events sync error:', error);
+      }
+    };
+
+    void loadEvents();
+    return () => controller.abort();
+  }, [bpaikUser?.id, eventsReloadKey]);
+
+  // Sync users from Cloudflare Worker / D1 (admin only)
   useEffect(() => {
-    const unsub = onSnapshot(collection(db, 'auditLogs'), (snapshot) => {
-      const list: AuditLog[] = [];
-      snapshot.forEach(doc => list.push({ ...(doc.data() as AuditLog), id: doc.id }));
-      list.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
-      setAuditLogs(list);
-    }, (err) => console.warn('Audit sync notice:', err.message));
-    return () => unsub();
-  }, []);
+    if (!bpaikUser || bpaikUser.role !== 'ADMIN') {
+      setEmployees([]);
+      return;
+    }
+
+    const controller = new AbortController();
+
+    const loadUsers = async () => {
+      try {
+        const response = await fetch('/api/users', {
+          method: 'GET',
+          credentials: 'same-origin',
+          signal: controller.signal
+        });
+
+        const payload = await response.json() as {
+          success?: boolean;
+          users?: BPAIKUser[];
+          error?: string;
+        };
+
+        if (!response.ok || payload.success !== true || !Array.isArray(payload.users)) {
+          throw new Error(payload.error || 'Gagal mengambil pengguna dari D1.');
+        }
+
+        setEmployees(
+          [...payload.users].sort((a, b) => a.name.localeCompare(b.name))
+        );
+      } catch (error) {
+        if (error instanceof Error && error.name === 'AbortError') return;
+        console.error('D1 users sync error:', error);
+      }
+    };
+
+    void loadUsers();
+    return () => controller.abort();
+  }, [bpaikUser?.id, bpaikUser?.role, usersReloadKey]);
+
+  // Sync attendance from Worker / D1
+  useEffect(() => {
+    if (!bpaikUser) {
+      setAttendanceRecords([]);
+      return;
+    }
+
+    let active = true;
+    const loadAttendance = async () => {
+      try {
+        const response = await fetch('/api/attendance', {
+          credentials: 'same-origin'
+        });
+        const payload = await response.json() as {
+          success?: boolean;
+          records?: AttendanceRecord[];
+          error?: string;
+        };
+        if (!response.ok || payload.success !== true || !Array.isArray(payload.records)) {
+          throw new Error(payload.error || 'Gagal membaca presensi dari D1.');
+        }
+        if (active) setAttendanceRecords(payload.records);
+      } catch (error) {
+        if (active) console.error('D1 attendance sync error:', error);
+      }
+    };
+
+    void loadAttendance();
+    const interval = setInterval(() => void loadAttendance(), 5000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [bpaikUser?.id, bpaikUser?.role, attendanceReloadKey]);
+
+  // Sync audit log from Worker / D1 (admin only)
+  useEffect(() => {
+    if (!bpaikUser || bpaikUser.role !== 'ADMIN') {
+      setAuditLogs([]);
+      return;
+    }
+
+    let active = true;
+    const loadAudit = async () => {
+      try {
+        const response = await fetch('/api/audit', {
+          credentials: 'same-origin'
+        });
+        const payload = await response.json() as {
+          success?: boolean;
+          logs?: AuditLog[];
+          error?: string;
+        };
+        if (!response.ok || payload.success !== true || !Array.isArray(payload.logs)) {
+          throw new Error(payload.error || 'Gagal membaca audit log dari D1.');
+        }
+        if (active) setAuditLogs(payload.logs);
+      } catch (error) {
+        if (active) console.error('D1 audit sync error:', error);
+      }
+    };
+
+    void loadAudit();
+    const interval = setInterval(() => void loadAudit(), 5000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [bpaikUser?.id, bpaikUser?.role, auditReloadKey]);
 
   if (isLoading) {
     return (
@@ -242,7 +291,7 @@ function MainAppContent() {
                 attendanceRecords={attendanceRecords}
                 auditLogs={auditLogs}
                 onOpenProjectorQr={(event) => navigate(`/proyektor/${event.id}`)}
-                onRefreshData={() => {}}
+                onRefreshData={refreshAppData}
                 onLogout={logout}
               />
             ) : (

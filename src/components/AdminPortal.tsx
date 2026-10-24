@@ -39,8 +39,6 @@ import {
   CreditCard
 } from 'lucide-react';
 import { BPAIKUser, BPAIKEvent, AttendanceRecord, AuditLog, LeaveRequest } from '../types';
-import { db } from '../firebase';
-import { collection, doc, setDoc, updateDoc, deleteDoc, addDoc, onSnapshot, query, orderBy } from 'firebase/firestore';
 import { exportAttendanceToExcel, downloadParticipantTemplateExcel } from '../utils/reportExport';
 import { AttendancePdfModal } from './AttendancePdfModal';
 import { ParticipantCardModal } from './ParticipantCardModal';
@@ -74,6 +72,8 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const mainContentRef = useRef<HTMLDivElement | null>(null);
 
   const [activeMenu, setActiveMenu] = useState<'dashboard' | 'kegiatan' | 'perizinan' | 'pegawai' | 'rekap' | 'pengaturan' | 'audit'>('dashboard');
+  const [selectedAuditIds, setSelectedAuditIds] = useState<string[]>([]);
+  const [isDeletingAudit, setIsDeletingAudit] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
 
   // New Modals: Upload Excel, PDF with KOP, and ID Card printing
@@ -82,6 +82,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   const [showCardModal, setShowCardModal] = useState(false);
   const [selectedEmployeeForCard, setSelectedEmployeeForCard] = useState<BPAIKUser | null>(null);
   const [selectedLeaveForLetter, setSelectedLeaveForLetter] = useState<LeaveRequest | null>(null);
+  const [deletingLeaveId, setDeletingLeaveId] = useState<string | null>(null);
   const [selectedAdminEventForDetail, setSelectedAdminEventForDetail] = useState<BPAIKEvent | null>(null);
 
   // Synchronize URL route with activeMenu & scroll to top: "buka antar halaman mulai dari atas"
@@ -137,6 +138,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
   // Modals
   const [showCreateEventModal, setShowCreateEventModal] = useState(false);
+  const [editingEventId, setEditingEventId] = useState<string | null>(null);
   const [showManualCorrectionModal, setShowManualCorrectionModal] = useState(false);
   const [selectedRecordToCorrect, setSelectedRecordToCorrect] = useState<AttendanceRecord | null>(null);
 
@@ -175,17 +177,39 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
   });
   const [settingsSavedMsg, setSettingsSavedMsg] = useState(false);
 
-  // Real-time listener for leave requests
+  // Sync leave requests from Worker / D1
   useEffect(() => {
-    const unsub = onSnapshot(collection(db, 'leaveRequests'), (snap) => {
-      const list: LeaveRequest[] = [];
-      snap.forEach(d => list.push({ id: d.id, ...d.data() } as LeaveRequest));
-      list.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-      setLeaveRequests(list);
-    }, (err) => {
-      console.warn('Leave requests sync notice:', err);
-    });
-    return () => unsub();
+    let active = true;
+
+    const loadLeaves = async () => {
+      try {
+        const response = await fetch('/api/leaves', { credentials: 'same-origin' });
+        const payload = await response.json() as {
+          success?: boolean;
+          leaves?: LeaveRequest[];
+          error?: string;
+        };
+        if (!response.ok || payload.success !== true || !Array.isArray(payload.leaves)) {
+          throw new Error(payload.error || 'Gagal membaca pengajuan izin.');
+        }
+        if (active) {
+          setLeaveRequests(
+            [...payload.leaves].sort(
+              (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+            )
+          );
+        }
+      } catch (error) {
+        if (active) console.error('D1 leave sync error:', error);
+      }
+    };
+
+    void loadLeaves();
+    const interval = setInterval(() => void loadLeaves(), 5000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
   }, []);
 
   // Quick stats
@@ -261,44 +285,109 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     return eventDate < today;
   };
 
-  // Toggle Event Session (Buka Sesi / Tutup Sesi)
+  // Toggle Event Session through the Worker / D1 API
   const handleToggleSession = async (event: BPAIKEvent) => {
     const isCurrentlyActive = event.sessionStatus === 'aktif';
 
-    // User Rule: setelah tanggal terlewat tidak bisa membuka sesi qr nya
     if (!isCurrentlyActive && isEventExpired(event.date)) {
       alert(`Sesi presensi tidak dapat dibuka karena tanggal kegiatan (${event.date}) telah terlewat. Kegiatan dinyatakan selesai.`);
       return;
     }
 
-    const newStatus = isCurrentlyActive ? 'ditutup' : 'aktif';
-    const nowIso = new Date().toISOString();
-
     try {
-      const eventRef = doc(db, 'events', event.id);
-      await updateDoc(eventRef, {
-        sessionStatus: newStatus,
-        status: isCurrentlyActive ? 'selesai' : 'berlangsung',
-        sessionOpenedAt: isCurrentlyActive ? event.sessionOpenedAt : nowIso,
-        sessionClosedAt: isCurrentlyActive ? nowIso : null,
-        updatedAt: nowIso
-      });
+      const response = await fetch(
+        `/api/events/${encodeURIComponent(event.id)}/session`,
+        {
+          method: 'POST',
+          credentials: 'same-origin'
+        }
+      );
 
-      await addDoc(collection(db, 'auditLogs'), {
-        action: isCurrentlyActive ? 'CLOSE_SESSION' : 'OPEN_SESSION',
-        actorEmail: currentUser.email,
-        actorName: currentUser.name,
-        actorRole: currentUser.role,
-        targetType: 'EVENT',
-        targetId: event.id,
-        description: `${isCurrentlyActive ? 'Menutup' : 'Membuka'} sesi presensi: ${event.title}`,
-        timestamp: nowIso
-      });
+      const payload = await response.json() as {
+        success?: boolean;
+        error?: string;
+      };
+
+      if (!response.ok || payload.success !== true) {
+        throw new Error(payload.error || 'Gagal memperbarui sesi kegiatan.');
+      }
 
       onRefreshData();
     } catch (err) {
       console.error('Toggle session error:', err);
-      alert('Gagal memperbarui status sesi kegiatan.');
+      alert(err instanceof Error
+        ? err.message
+        : 'Gagal memperbarui status sesi kegiatan.');
+    }
+  };
+
+
+  const handleEditEvent = (event: BPAIKEvent) => {
+    if (event.sessionStatus === "aktif") {
+      alert("Tutup sesi QR terlebih dahulu sebelum mengedit kegiatan.");
+      return;
+    }
+    if (event.status === "selesai" || event.status === "dibatalkan") {
+      alert("Kegiatan yang sudah selesai atau dibatalkan tidak dapat diedit.");
+      return;
+    }
+
+    setEditingEventId(event.id);
+    setEventForm({
+      title: event.title,
+      description: event.description || "",
+      startDateTime: event.startDateTime?.slice(0, 16) || `${event.date}T${event.startTime}`,
+      endDateTime: event.endDateTime?.slice(0, 16) || `${event.date}T${event.endTime}`,
+      location: event.location || "",
+      sessionDurationMinutes: event.sessionDurationMinutes || 60
+    });
+    setSelectedAdminEventForDetail(null);
+    setShowCreateEventModal(true);
+  };
+
+  const handleDeleteEvent = async (event: BPAIKEvent) => {
+    if (!window.confirm(
+      `Hapus kegiatan "${event.title}"? Kegiatan yang memiliki riwayat presensi/izin tidak dapat dihapus.`
+    )) return;
+
+    try {
+      const response = await fetch(`/api/events/${encodeURIComponent(event.id)}`, {
+        method: "DELETE",
+        credentials: "same-origin"
+      });
+      const payload = await response.json() as { success?: boolean; error?: string };
+      if (!response.ok || payload.success !== true) {
+        throw new Error(payload.error || "Gagal menghapus kegiatan.");
+      }
+      setSelectedAdminEventForDetail(null);
+      onRefreshData();
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Gagal menghapus kegiatan.");
+    }
+  };
+
+  const handleFinishEvent = async (event: BPAIKEvent) => {
+    if (event.sessionStatus !== "ditutup") {
+      alert("Tutup sesi QR terlebih dahulu sebelum menandai kegiatan selesai.");
+      return;
+    }
+    if (!window.confirm(`Tandai "${event.title}" sebagai kegiatan selesai? Sesi QR tidak dapat dibuka kembali.`)) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/events/${encodeURIComponent(event.id)}/finish`, {
+        method: "POST",
+        credentials: "same-origin"
+      });
+      const payload = await response.json() as { success?: boolean; error?: string };
+      if (!response.ok || payload.success !== true) {
+        throw new Error(payload.error || "Gagal menyelesaikan kegiatan.");
+      }
+      setSelectedAdminEventForDetail(null);
+      onRefreshData();
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Gagal menyelesaikan kegiatan.");
     }
   };
 
@@ -339,20 +428,35 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
         updatedAt: nowIso
       };
 
-      await setDoc(doc(db, 'events', eventId), newEvent);
-
-      await addDoc(collection(db, 'auditLogs'), {
-        action: 'CREATE_EVENT',
-        actorEmail: currentUser.email,
-        actorName: currentUser.name,
-        actorRole: currentUser.role,
-        targetType: 'EVENT',
-        targetId: eventId,
-        description: `Membuat kegiatan baru: ${newEvent.title}`,
-        timestamp: nowIso
+      const response = await fetch(
+        editingEventId ? `/api/events/${encodeURIComponent(editingEventId)}` : '/api/events',
+        {
+        method: editingEventId ? 'PUT' : 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          title: newEvent.title,
+          description: newEvent.description,
+          startDateTime: eventForm.startDateTime,
+          endDateTime: eventForm.endDateTime,
+          location: newEvent.location,
+          sessionDurationMinutes: newEvent.sessionDurationMinutes
+        })
       });
 
+      const payload = await response.json() as {
+        success?: boolean;
+        event?: BPAIKEvent;
+        error?: string;
+      };
+
+      if (!response.ok || payload.success !== true || !payload.event) {
+        throw new Error(payload.error || 'Gagal menyimpan kegiatan ke D1.');
+      };
+
+
       setShowCreateEventModal(false);
+      setEditingEventId(null);
       setEventForm({
         title: '',
         description: '',
@@ -364,100 +468,97 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       onRefreshData();
     } catch (err) {
       console.error('Create event error:', err);
-      alert('Gagal membuat kegiatan baru.');
+      alert(err instanceof Error ? err.message : 'Gagal menyimpan kegiatan.');
     }
   };
 
-  // Handle Leave Approval (ACC)
+  // Review leave requests through Worker / D1
   const handleApproveLeave = async (leave: LeaveRequest) => {
     try {
-      const nowIso = new Date().toISOString();
-      
-      // 1. Update leave request to DISETUJUI
-      await updateDoc(doc(db, 'leaveRequests', leave.id), {
-        status: 'DISETUJUI',
-        reviewedBy: currentUser.email,
-        reviewedAt: nowIso,
-        updatedAt: nowIso
-      });
-
-      // 2. Automatically record in attendanceRecords as IZIN with confirmed signature status
-      const recordId = `att_izin_${leave.id}`;
-      const attRecord: AttendanceRecord = {
-        id: recordId,
-        eventId: leave.eventId,
-        eventTitle: leave.eventTitle,
-        eventDate: leave.eventDate,
-        userId: leave.userId,
-        userEmail: leave.userEmail,
-        userName: leave.userName,
-        userNpp: leave.userNpp,
-        userJabatan: leave.userJabatan,
-        userWhatsapp: leave.userWhatsapp,
-        scanTime: nowIso,
-        attendanceStatus: 'IZIN',
-        signatureStatus: 'TERKONFIRMASI',
-        notes: `Disetujui Admin BPAIK (${currentUser.name}): ${leave.reason}`,
-        verifiedBy: currentUser.email,
-        createdAt: nowIso,
-        updatedAt: nowIso
-      };
-      await setDoc(doc(db, 'attendanceRecords', recordId), attRecord);
-
-      // 3. Audit log
-      await addDoc(collection(db, 'auditLogs'), {
-        action: 'APPROVE_LEAVE',
-        actorEmail: currentUser.email,
-        actorName: currentUser.name,
-        actorRole: currentUser.role,
-        targetType: 'LEAVE_REQUEST',
-        targetId: leave.id,
-        description: `Menyetujui (ACC) izin ${leave.userName} untuk kegiatan: ${leave.eventTitle}`,
-        timestamp: nowIso
-      });
-
-      alert(`Izin untuk ${leave.userName} telah disetujui (ACC) dan dicatat sebagai IZIN.`);
+      const response = await fetch(
+        `/api/leaves/${encodeURIComponent(leave.id)}/review`,
+        {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ decision: 'DISETUJUI', adminNotes: '' })
+        }
+      );
+      const payload = await response.json() as { success?: boolean; error?: string };
+      if (!response.ok || payload.success !== true) {
+        throw new Error(payload.error || 'Gagal menyetujui izin.');
+      }
+      alert(`Izin untuk ${leave.userName} telah disetujui dan dicatat sebagai IZIN.`);
       onRefreshData();
-    } catch (err) {
-      console.error('Approve leave error:', err);
-      alert('Gagal menyetujui izin.');
+    } catch (error) {
+      console.error('Approve leave error:', error);
+      alert(error instanceof Error ? error.message : 'Gagal menyetujui izin.');
     }
   };
 
-  // Handle Leave Rejection
   const handleRejectLeave = async (leave: LeaveRequest) => {
     const reason = prompt('Masukkan catatan/alasan penolakan izin:');
     if (reason === null) return;
 
     try {
-      const nowIso = new Date().toISOString();
-      await updateDoc(doc(db, 'leaveRequests', leave.id), {
-        status: 'DITOLAK',
-        reviewedBy: currentUser.email,
-        reviewedAt: nowIso,
-        adminNotes: reason,
-        updatedAt: nowIso
-      });
-
-      await addDoc(collection(db, 'auditLogs'), {
-        action: 'REJECT_LEAVE',
-        actorEmail: currentUser.email,
-        actorName: currentUser.name,
-        actorRole: currentUser.role,
-        targetType: 'LEAVE_REQUEST',
-        targetId: leave.id,
-        description: `Menolak izin ${leave.userName} untuk kegiatan: ${leave.eventTitle}`,
-        timestamp: nowIso
-      });
-
+      const response = await fetch(
+        `/api/leaves/${encodeURIComponent(leave.id)}/review`,
+        {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ decision: 'DITOLAK', adminNotes: reason })
+        }
+      );
+      const payload = await response.json() as { success?: boolean; error?: string };
+      if (!response.ok || payload.success !== true) {
+        throw new Error(payload.error || 'Gagal menolak izin.');
+      }
       onRefreshData();
-    } catch (err) {
-      console.error('Reject leave error:', err);
-      alert('Gagal menolak izin.');
+    } catch (error) {
+      console.error('Reject leave error:', error);
+      alert(error instanceof Error ? error.message : 'Gagal menolak izin.');
     }
   };
 
-  // Handle Manual Attendance Correction
+
+  const handleDeleteLeave = async (leave: LeaveRequest) => {
+    if (leave.status !== "DISETUJUI") {
+      alert("Tombol hapus ini hanya tersedia untuk pengajuan yang telah disetujui.");
+      return;
+    }
+
+    if (!window.confirm(
+      `Hapus pengajuan izin ${leave.userName} untuk kegiatan "${leave.eventTitle}"? Catatan presensi yang sudah tercatat tetap dipertahankan.`
+    )) return;
+
+    setDeletingLeaveId(leave.id);
+    try {
+      const response = await fetch(`/api/leaves/${encodeURIComponent(leave.id)}`, {
+        method: "DELETE",
+        credentials: "same-origin"
+      });
+      const payload = await response.json() as {
+        success?: boolean;
+        error?: string;
+        message?: string;
+      };
+
+      if (!response.ok || payload.success !== true) {
+        throw new Error(payload.error || "Gagal menghapus pengajuan izin.");
+      }
+
+      setLeaveRequests(current => current.filter(item => item.id !== leave.id));
+      alert(payload.message || "Pengajuan izin berhasil dihapus.");
+      onRefreshData();
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Gagal menghapus pengajuan izin.");
+    } finally {
+      setDeletingLeaveId(null);
+    }
+  };
+
+  // Manual attendance correction through Worker / D1
   const handleSaveCorrection = async () => {
     if (!selectedRecordToCorrect) return;
     if (!correctionReason.trim()) {
@@ -467,37 +568,104 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
 
     setIsSavingCorrection(true);
     try {
-      const recordRef = doc(db, 'attendanceRecords', selectedRecordToCorrect.id);
-      const nowIso = new Date().toISOString();
-      const oldStatus = selectedRecordToCorrect.attendanceStatus;
-
-      await updateDoc(recordRef, {
-        attendanceStatus: correctionStatus,
-        verifiedBy: currentUser.email,
-        notes: `Koreksi manual oleh ${currentUser.name} (${currentUser.email}): ${correctionReason.trim()} [Sebelumnya: ${oldStatus}]`,
-        updatedAt: nowIso
-      });
-
-      await addDoc(collection(db, 'auditLogs'), {
-        action: 'MANUAL_CORRECTION',
-        actorEmail: currentUser.email,
-        actorName: currentUser.name,
-        actorRole: currentUser.role,
-        targetType: 'ATTENDANCE_RECORD',
-        targetId: selectedRecordToCorrect.id,
-        description: `Koreksi presensi ${selectedRecordToCorrect.userName}: ${oldStatus} -> ${correctionStatus}. Alasan: ${correctionReason.trim()}`,
-        timestamp: nowIso
-      });
+      const response = await fetch(
+        `/api/attendance/${encodeURIComponent(selectedRecordToCorrect.id)}/correction`,
+        {
+          method: 'PUT',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            attendanceStatus: correctionStatus,
+            reason: correctionReason.trim()
+          })
+        }
+      );
+      const payload = await response.json() as { success?: boolean; error?: string };
+      if (!response.ok || payload.success !== true) {
+        throw new Error(payload.error || 'Gagal menyimpan koreksi manual.');
+      }
 
       setShowManualCorrectionModal(false);
       setSelectedRecordToCorrect(null);
       setCorrectionReason('');
       onRefreshData();
-    } catch (err) {
-      console.error('Manual correction error:', err);
-      alert('Gagal menyimpan koreksi manual.');
+    } catch (error) {
+      console.error('Manual correction error:', error);
+      alert(error instanceof Error ? error.message : 'Gagal menyimpan koreksi manual.');
     } finally {
       setIsSavingCorrection(false);
+    }
+  };
+
+
+  const handleDeleteAttendance = async (record: AttendanceRecord) => {
+    if (!window.confirm(
+      `Hapus catatan presensi ${record.userName} pada kegiatan "${record.eventTitle}"? Tindakan ini dicatat dalam audit.`
+    )) return;
+
+    try {
+      const response = await fetch(`/api/attendance/${encodeURIComponent(record.id)}`, {
+        method: "DELETE",
+        credentials: "same-origin"
+      });
+      const payload = await response.json() as { success?: boolean; error?: string };
+      if (!response.ok || payload.success !== true) {
+        throw new Error(payload.error || "Gagal menghapus catatan presensi.");
+      }
+      onRefreshData();
+    } catch (error) {
+      alert(error instanceof Error ? error.message : "Gagal menghapus catatan presensi.");
+    }
+  };
+
+
+  const handleDeleteAuditLogs = async (deleteAll: boolean) => {
+    const ids = [...selectedAuditIds];
+
+    if (!deleteAll && ids.length === 0) {
+      alert("Pilih setidaknya satu riwayat yang ingin dihapus.");
+      return;
+    }
+
+    const confirmed = window.confirm(
+      deleteAll
+        ? "PERINGATAN: Hapus seluruh riwayat audit yang tersimpan di D1? Aksi ini tidak dapat dibatalkan. Satu catatan audit pembersihan akan tetap disimpan."
+        : `Hapus ${ids.length} riwayat yang dipilih? Satu catatan audit penghapusan akan tetap disimpan.`
+    );
+
+    if (!confirmed) return;
+
+    setIsDeletingAudit(true);
+    try {
+      const response = await fetch("/api/audit", {
+        method: "DELETE",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(deleteAll ? { all: true } : { ids })
+      });
+
+      const payload = await response.json() as {
+        success?: boolean;
+        error?: string;
+        message?: string;
+        deletedCount?: number;
+      };
+
+      if (!response.ok || payload.success !== true) {
+        throw new Error(payload.error || "Gagal menghapus riwayat audit.");
+      }
+
+      setSelectedAuditIds([]);
+      alert(payload.message || "Riwayat audit berhasil dibersihkan.");
+      onRefreshData();
+    } catch (error) {
+      alert(
+        error instanceof Error
+          ? error.message
+          : "Gagal menghapus riwayat audit."
+      );
+    } finally {
+      setIsDeletingAudit(false);
     }
   };
 
@@ -538,189 +706,196 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
     setShowEmployeeModal(true);
   };
 
-  // Save Participant (Tambah Baru atau Update Penetapan User)
+  // Save Participant through the Worker / D1 API
   const handleSaveEmployee = async (e: React.FormEvent) => {
     e.preventDefault();
+
     if (!employeeForm.name.trim() || !employeeForm.email.trim()) {
       alert('Nama dan Email peserta wajib diisi.');
       return;
     }
 
     setIsSavingEmployee(true);
-    const nowIso = new Date().toISOString();
-    try {
-      if (editingEmployee) {
-        // Update existing participant & penetapan role/status
-        const userRef = doc(db, 'users', editingEmployee.id);
-        const updatedData: Partial<BPAIKUser> = {
-          name: employeeForm.name.trim(),
-          email: employeeForm.email.trim().toLowerCase(),
-          npp: employeeForm.npp.trim() || undefined,
-          jabatan: employeeForm.jabatan.trim() || undefined,
-          whatsapp: employeeForm.whatsapp.trim() || undefined,
-          role: employeeForm.role,
-          status: employeeForm.status,
-          updatedAt: nowIso
-        };
-        await updateDoc(userRef, updatedData);
 
-        await addDoc(collection(db, 'auditLogs'), {
-          action: 'UPDATE_USER',
-          actorEmail: currentUser.email,
-          actorName: currentUser.name,
-          actorRole: currentUser.role,
-          targetType: 'USER',
-          targetId: editingEmployee.id,
-          description: `Memperbarui penetapan user: ${employeeForm.name} (Peran: ${employeeForm.role}, Status: ${employeeForm.status})`,
-          timestamp: nowIso
-        });
-        alert(`Data dan penetapan peserta ${employeeForm.name} berhasil disimpan.`);
-      } else {
-        // Create new participant
-        const emailClean = employeeForm.email.trim().toLowerCase();
-        const existing = employees.find(emp => emp.email.toLowerCase() === emailClean);
+    try {
+      const emailClean = employeeForm.email.trim().toLowerCase();
+
+      if (!editingEmployee) {
+        const existing = employees.find(
+          emp => emp.email.toLowerCase() === emailClean
+        );
         if (existing) {
           alert(`Email ${emailClean} sudah terdaftar atas nama ${existing.name}.`);
-          setIsSavingEmployee(false);
           return;
         }
+      }
 
-        const newId = `user_${Date.now()}`;
-        const newUser: BPAIKUser = {
-          id: newId,
+      const isEditing = Boolean(editingEmployee);
+      const url = isEditing
+        ? `/api/users/${encodeURIComponent(editingEmployee!.id)}`
+        : '/api/users';
+
+      const response = await fetch(url, {
+        method: isEditing ? 'PUT' : 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
           name: employeeForm.name.trim(),
           email: emailClean,
-          npp: employeeForm.npp.trim() || `NPP. ${Date.now().toString().slice(-8)}`,
-          jabatan: employeeForm.jabatan.trim() || 'Peserta Kajian',
-          whatsapp: employeeForm.whatsapp.trim() || '',
+          npp: employeeForm.npp.trim(),
+          jabatan: employeeForm.jabatan.trim(),
+          whatsapp: employeeForm.whatsapp.trim(),
           role: employeeForm.role,
-          status: employeeForm.status,
-          qrUniqueCode: `BPAIK-KARTU-${employeeForm.npp.replace(/[^a-zA-Z0-9]/g, '') || newId}`,
-          createdAt: nowIso,
-          updatedAt: nowIso
-        };
+          status: employeeForm.status
+        })
+      });
 
-        await setDoc(doc(db, 'users', newId), newUser);
+      const payload = await response.json() as {
+        success?: boolean;
+        user?: BPAIKUser;
+        error?: string;
+      };
 
-        await addDoc(collection(db, 'auditLogs'), {
-          action: 'CREATE_USER',
-          actorEmail: currentUser.email,
-          actorName: currentUser.name,
-          actorRole: currentUser.role,
-          targetType: 'USER',
-          targetId: newId,
-          description: `Menambahkan peserta baru: ${newUser.name} (${newUser.email}) - Peran: ${newUser.role}, Status: ${newUser.status}`,
-          timestamp: nowIso
-        });
-        alert(`Peserta baru ${newUser.name} berhasil ditambahkan ke sistem.`);
+      if (!response.ok || payload.success !== true || !payload.user) {
+        throw new Error(payload.error || 'Gagal menyimpan pengguna ke D1.');
       }
 
       setShowEmployeeModal(false);
       onRefreshData();
+
+      alert(isEditing
+        ? `Data peserta ${payload.user.name} berhasil diperbarui.`
+        : `Peserta ${payload.user.name} berhasil ditambahkan. Kode QR unik dibuat oleh server dan tersimpan di D1.`);
     } catch (err) {
       console.error('Save employee error:', err);
-      alert('Gagal menyimpan data peserta: ' + (err instanceof Error ? err.message : 'Unknown error'));
+      alert(err instanceof Error
+        ? err.message
+        : 'Gagal menyimpan data peserta.');
     } finally {
       setIsSavingEmployee(false);
     }
   };
 
-  // Quick toggle penetapan peran (ADMIN vs PESERTA)
+  // Change user role through the Worker / D1 API
   const handleToggleUserRole = async (emp: BPAIKUser) => {
     if (emp.email.toLowerCase() === currentUser.email.toLowerCase()) {
       alert('Anda tidak dapat mengubah peran akun Anda sendiri.');
       return;
     }
-    const newRole: 'ADMIN' | 'PESERTA' = emp.role === 'ADMIN' ? 'PESERTA' : 'ADMIN';
-    const confirmMsg = `Ubah penetapan peran ${emp.name} menjadi ${newRole}?`;
-    if (!window.confirm(confirmMsg)) return;
+
+    const newRole: 'ADMIN' | 'PESERTA' =
+      emp.role === 'ADMIN' ? 'PESERTA' : 'ADMIN';
+
+    if (!window.confirm(`Ubah penetapan peran ${emp.name} menjadi ${newRole}?`)) {
+      return;
+    }
 
     try {
-      const nowIso = new Date().toISOString();
-      await updateDoc(doc(db, 'users', emp.id), {
-        role: newRole,
-        updatedAt: nowIso
+      const response = await fetch(`/api/users/${encodeURIComponent(emp.id)}`, {
+        method: 'PUT',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ role: newRole })
       });
-      await addDoc(collection(db, 'auditLogs'), {
-        action: 'CHANGE_USER_ROLE',
-        actorEmail: currentUser.email,
-        actorName: currentUser.name,
-        actorRole: currentUser.role,
-        targetType: 'USER',
-        targetId: emp.id,
-        description: `Mengubah penetapan peran ${emp.name} menjadi ${newRole}`,
-        timestamp: nowIso
-      });
+
+      const payload = await response.json() as {
+        success?: boolean;
+        error?: string;
+      };
+
+      if (!response.ok || payload.success !== true) {
+        throw new Error(payload.error || 'Gagal mengubah peran pengguna.');
+      }
+
       onRefreshData();
     } catch (err) {
       console.error('Toggle role error:', err);
-      alert('Gagal mengubah peran user.');
+      alert(err instanceof Error ? err.message : 'Gagal mengubah peran user.');
     }
   };
 
-  // Quick toggle penetapan status (aktif vs nonaktif)
+  // Change user status through the Worker / D1 API
   const handleToggleUserStatus = async (emp: BPAIKUser) => {
     if (emp.email.toLowerCase() === currentUser.email.toLowerCase()) {
       alert('Anda tidak dapat menonaktifkan akun Anda sendiri.');
       return;
     }
-    const newStatus: 'aktif' | 'nonaktif' = emp.status === 'aktif' ? 'nonaktif' : 'aktif';
-    const confirmMsg = `Ubah penetapan status ${emp.name} menjadi ${newStatus.toUpperCase()}?`;
-    if (!window.confirm(confirmMsg)) return;
+
+    const newStatus: 'aktif' | 'nonaktif' =
+      emp.status === 'aktif' ? 'nonaktif' : 'aktif';
+
+    if (!window.confirm(
+      `Ubah penetapan status ${emp.name} menjadi ${newStatus.toUpperCase()}?`
+    )) {
+      return;
+    }
 
     try {
-      const nowIso = new Date().toISOString();
-      await updateDoc(doc(db, 'users', emp.id), {
-        status: newStatus,
-        updatedAt: nowIso
+      const response = await fetch(`/api/users/${encodeURIComponent(emp.id)}`, {
+        method: 'PUT',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: newStatus })
       });
-      await addDoc(collection(db, 'auditLogs'), {
-        action: 'CHANGE_USER_STATUS',
-        actorEmail: currentUser.email,
-        actorName: currentUser.name,
-        actorRole: currentUser.role,
-        targetType: 'USER',
-        targetId: emp.id,
-        description: `Mengubah status user ${emp.name} menjadi ${newStatus}`,
-        timestamp: nowIso
-      });
+
+      const payload = await response.json() as {
+        success?: boolean;
+        error?: string;
+      };
+
+      if (!response.ok || payload.success !== true) {
+        throw new Error(payload.error || 'Gagal mengubah status pengguna.');
+      }
+
       onRefreshData();
     } catch (err) {
       console.error('Toggle status error:', err);
-      alert('Gagal mengubah status user.');
+      alert(err instanceof Error ? err.message : 'Gagal mengubah status user.');
     }
   };
 
-  // Hapus peserta
+  // Delete user through the Worker / D1 API
   const handleDeleteEmployee = async (emp: BPAIKUser) => {
     if (emp.email.toLowerCase() === currentUser.email.toLowerCase()) {
       alert('Anda tidak dapat menghapus akun Anda sendiri.');
       return;
     }
 
-    const confirmDelete = window.confirm(`Apakah Anda yakin ingin menghapus peserta "${emp.name}" (${emp.email}) dari daftar BPAIK?`);
+    const confirmDelete = window.confirm(
+      `Apakah Anda yakin ingin menghapus peserta "${emp.name}" (${emp.email}) dari daftar BPAIK?`
+    );
     if (!confirmDelete) return;
 
     try {
-      const nowIso = new Date().toISOString();
-      await deleteDoc(doc(db, 'users', emp.id));
-
-      await addDoc(collection(db, 'auditLogs'), {
-        action: 'DELETE_USER',
-        actorEmail: currentUser.email,
-        actorName: currentUser.name,
-        actorRole: currentUser.role,
-        targetType: 'USER',
-        targetId: emp.id,
-        description: `Menghapus peserta: ${emp.name} (${emp.email})`,
-        timestamp: nowIso
+      const response = await fetch(`/api/users/${encodeURIComponent(emp.id)}`, {
+        method: 'DELETE',
+        credentials: 'same-origin'
       });
 
+      const payload = await response.json() as {
+        success?: boolean;
+        error?: string;
+        deactivated?: boolean;
+        message?: string;
+      };
+
+      if (!response.ok || payload.success !== true) {
+        throw new Error(payload.error || 'Gagal menghapus pengguna.');
+      }
+
       alert(`Peserta "${emp.name}" berhasil dihapus.`);
+      if (payload.deactivated) {
+        alert(payload.message || "Peserta memiliki riwayat. Akun berhasil dinonaktifkan.");
+      }
+      if (payload.deactivated) {
+        alert(payload.message || "Peserta memiliki riwayat. Akun berhasil dinonaktifkan.");
+      }
       onRefreshData();
     } catch (err) {
       console.error('Delete employee error:', err);
-      alert('Gagal menghapus peserta: ' + (err instanceof Error ? err.message : 'Unknown error'));
+      alert(err instanceof Error
+        ? err.message
+        : 'Gagal menghapus peserta.');
     }
   };
 
@@ -729,9 +904,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
       {/* 1. TOP STICKY HEADER - Flush at top, no floating gap */}
       <header className="sticky top-0 z-30 w-full bg-[#0f613c] border-b border-[#093d26] shadow-md px-4 sm:px-8 py-3 text-white flex items-center justify-between shrink-0">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-[#F4C542] text-slate-950 font-black text-base flex items-center justify-center font-islamic border border-amber-300 shadow-xs">
-            P
-          </div>
+          <div className="w-9 h-9 rounded-xl bg-[#F4C542] text-slate-950 font-black text-base flex items-center justify-center font-islamic border border-amber-300 shadow-xs"><img src="/images/logoBPAIK.png" alt="Logo BPAIK" className="w-full h-full object-contain" /></div>
           <div>
             <h1 className="text-base sm:text-lg font-bold font-islamic tracking-tight text-white leading-tight flex items-center gap-1.5">
               Portal<span className="text-[#F4C542]">BPAIK</span>
@@ -1150,7 +1323,18 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                 <div className="flex flex-wrap items-center gap-2.5">
                   <button
                     type="button"
-                    onClick={() => setShowCreateEventModal(true)}
+                    onClick={() => {
+                      setEditingEventId(null);
+                      setEventForm({
+                        title: '',
+                        description: '',
+                        startDateTime: `${todayStr}T08:30`,
+                        endDateTime: `${todayStr}T11:45`,
+                        location: "Auditorium Gedung KH. Ahmad Dahlan Lt. 4 UNISA Bandung",
+                        sessionDurationMinutes: 60
+                      });
+                      setShowCreateEventModal(true);
+                    }}
                     className="tactile-3d-btn-primary px-4 py-2.5 rounded-xl text-xs font-bold flex items-center gap-2 cursor-pointer"
                   >
                     <Plus className="w-4 h-4 text-[#F4C542]" />
@@ -1213,7 +1397,18 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   </p>
                   <button
                     type="button"
-                    onClick={() => setShowCreateEventModal(true)}
+                    onClick={() => {
+                      setEditingEventId(null);
+                      setEventForm({
+                        title: '',
+                        description: '',
+                        startDateTime: `${todayStr}T08:30`,
+                        endDateTime: `${todayStr}T11:45`,
+                        location: "Auditorium Gedung KH. Ahmad Dahlan Lt. 4 UNISA Bandung",
+                        sessionDurationMinutes: 60
+                      });
+                      setShowCreateEventModal(true);
+                    }}
                     className="tactile-3d-btn-primary px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer"
                   >
                     <Plus className="w-3.5 h-3.5 text-[#F4C542]" />
@@ -1344,6 +1539,35 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           >
                             <QrCode className={`w-3.5 h-3.5 ${isSessionActive ? 'text-slate-950' : 'text-slate-400'}`} />
                             <span>{isSessionActive ? 'Buka Proyektor' : 'QR Belum Aktif'}</span>
+                          </button>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-2 pt-2">
+                          {ev.sessionStatus === 'ditutup' && ev.status !== 'selesai' && ev.status !== 'dibatalkan' && (
+                            <button
+                              type="button"
+                              onClick={() => handleFinishEvent(ev)}
+                              className="flex-1 py-2 px-3 rounded-xl text-xs font-bold bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100 cursor-pointer flex items-center justify-center gap-1.5"
+                            >
+                              <CheckCircle2 className="w-3.5 h-3.5" />
+                              Kegiatan Selesai
+                            </button>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => handleEditEvent(ev)}
+                            disabled={ev.status === 'selesai' || ev.status === 'dibatalkan' || isSessionActive}
+                            className="py-2 px-3 rounded-xl text-xs font-bold bg-slate-50 text-slate-700 border border-slate-200 disabled:opacity-40 cursor-pointer flex items-center gap-1"
+                          >
+                            <Edit2 className="w-3.5 h-3.5" /> Edit
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handleDeleteEvent(ev)}
+                            disabled={isSessionActive}
+                            className="py-2 px-3 rounded-xl text-xs font-bold bg-red-50 text-red-700 border border-red-200 disabled:opacity-40 cursor-pointer flex items-center gap-1"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" /> Hapus
                           </button>
                         </div>
 
@@ -1492,6 +1716,16 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                             >
                               <Printer className="w-3.5 h-3.5 text-slate-950" />
                               <span className="hidden sm:inline">Cetak Surat Izin (PDF)</span>
+                            </button>
+                            <button
+                              type="button"
+                              disabled={deletingLeaveId === leave.id}
+                              onClick={() => void handleDeleteLeave(leave)}
+                              className="px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer bg-red-50 text-red-700 border border-red-200 hover:bg-red-100 disabled:opacity-50"
+                              title="Hapus pengajuan izin ini"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>{deletingLeaveId === leave.id ? "Menghapus..." : "Hapus"}</span>
                             </button>
                           </div>
                         )}
@@ -1825,9 +2059,27 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                     </thead>
                     <tbody className="divide-y divide-slate-100">
                       {filteredRecords.map(rec => (
-                        <tr key={rec.id} className="hover:bg-slate-50">
+                        <tr
+                          key={rec.id}
+                          className={employees.some(emp =>
+                            emp.email.toLowerCase() === rec.userEmail.toLowerCase() &&
+                            (emp.status || "").toLowerCase() === "nonaktif"
+                          )
+                            ? "bg-slate-100 text-slate-400 opacity-80"
+                            : "hover:bg-slate-50"
+                          }
+                        >
                           <td className="py-2.5">
-                            <p className="font-bold text-slate-800">{rec.userName}</p>
+                            <p className={`font-bold ${
+                              employees.some(emp =>
+                                emp.email.toLowerCase() === rec.userEmail.toLowerCase() &&
+                                (emp.status || "").toLowerCase() === "nonaktif"
+                              )
+                                ? "text-slate-400"
+                                : "text-slate-800"
+                            }`}>
+                              {rec.userName}
+                            </p>
                             <p className="text-[10px] text-slate-400">{rec.userEmail}</p>
                           </td>
                           <td className="py-2.5 text-slate-600 max-w-[180px] truncate">{rec.eventTitle}</td>
@@ -1845,7 +2097,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                                 <img
                                   src={rec.signatureData}
                                   alt={`TTD ${rec.userName}`}
-                                  className="h-10 w-24 object-contain bg-white rounded border border-slate-300 p-0.5 shadow-2xs"
+                                  className="h-16 w-40 object-contain bg-white rounded-lg border border-slate-300 p-1 shadow-sm"
                                 />
                                 <span className="text-[10px] text-emerald-700 font-bold hidden sm:inline">✓</span>
                               </div>
@@ -1857,14 +2109,40 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                           </td>
                           <td className="py-2.5">
                             <button
+                              type="button"
+                              disabled={employees.some(emp =>
+                                emp.email.toLowerCase() === rec.userEmail.toLowerCase() &&
+                                (emp.status || "").toLowerCase() === "nonaktif"
+                              )}
                               onClick={() => {
                                 setSelectedRecordToCorrect(rec);
                                 setCorrectionStatus(rec.attendanceStatus);
                                 setShowManualCorrectionModal(true);
                               }}
-                              className="text-[11px] text-blue-600 hover:underline font-bold cursor-pointer"
+                              className={employees.some(emp =>
+                                emp.email.toLowerCase() === rec.userEmail.toLowerCase() &&
+                                (emp.status || "").toLowerCase() === "nonaktif"
+                              )
+                                ? "text-[11px] text-slate-400 font-bold cursor-not-allowed"
+                                : "text-[11px] text-blue-600 hover:underline font-bold cursor-pointer"
+                              }
+                              title={employees.some(emp =>
+                                emp.email.toLowerCase() === rec.userEmail.toLowerCase() &&
+                                (emp.status || "").toLowerCase() === "nonaktif"
+                              )
+                                ? "Akun peserta nonaktif; koreksi dinonaktifkan"
+                                : "Koreksi presensi"
+                              }
                             >
                               Koreksi
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleDeleteAttendance(rec)}
+                              className="ml-2 text-[11px] text-red-600 hover:underline font-bold cursor-pointer"
+                              title="Hapus catatan presensi"
+                            >
+                              Hapus
                             </button>
                           </td>
                         </tr>
@@ -1951,14 +2229,69 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
             ======================================================== */}
             {activeMenu === 'audit' && (
               <div className="tactile-3d-card p-4 sm:p-5 border border-slate-200 space-y-4">
-                <h3 className="text-sm font-bold text-slate-900 font-islamic">
-                  Rekam Jejak Audit Server ({auditLogs.length})
-                </h3>
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-sm font-bold text-slate-900 font-islamic">
+                      Rekam Jejak Audit Server ({auditLogs.length})
+                    </h3>
+                    <p className="text-[11px] text-slate-500 mt-1">
+                      {selectedAuditIds.length} riwayat dipilih. Pilih Semua berlaku pada riwayat yang sedang tampil.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      disabled={isDeletingAudit || auditLogs.length === 0}
+                      onClick={() => setSelectedAuditIds(
+                        selectedAuditIds.length === auditLogs.length
+                          ? []
+                          : auditLogs.map(log => log.id)
+                      )}
+                      className="px-3 py-2 rounded-lg bg-slate-100 border border-slate-200 text-slate-700 text-xs font-bold disabled:opacity-40 cursor-pointer"
+                    >
+                      {selectedAuditIds.length === auditLogs.length && auditLogs.length > 0
+                        ? "Batalkan Pilihan"
+                        : "Pilih Semua"}
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isDeletingAudit || selectedAuditIds.length === 0}
+                      onClick={() => void handleDeleteAuditLogs(false)}
+                      className="px-3 py-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 text-xs font-bold disabled:opacity-40 cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5 inline mr-1" />
+                      Hapus Pilihan
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isDeletingAudit}
+                      onClick={() => void handleDeleteAuditLogs(true)}
+                      className="px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs font-bold disabled:opacity-40 cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5 inline mr-1" />
+                      Bersihkan Semua
+                    </button>
+                  </div>
+                </div>
 
                 <div className="space-y-2">
                   {auditLogs.map(log => (
                     <div key={log.id} className="bg-slate-50 p-3 rounded-xl border border-slate-200 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                      <div>
+                      <label className="flex items-start gap-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={selectedAuditIds.includes(log.id)}
+                          disabled={isDeletingAudit}
+                          onChange={event => setSelectedAuditIds(current =>
+                            event.target.checked
+                              ? Array.from(new Set([...current, log.id]))
+                              : current.filter(id => id !== log.id)
+                          )}
+                          className="mt-1 accent-emerald-700"
+                          aria-label={`Pilih riwayat ${log.action}`}
+                        />
+                      </label>
+                      <div className="flex-1 min-w-0">
                         <span className="px-1.5 py-0.5 rounded bg-slate-200 font-mono text-[10px] font-bold text-slate-700 mr-2">
                           {log.action}
                         </span>
@@ -2112,7 +2445,7 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   className="tactile-3d-btn-primary px-4 py-2 rounded-xl font-bold flex items-center gap-1.5 cursor-pointer"
                 >
                   <Plus className="w-4 h-4 text-[#F4C542]" />
-                  <span>Simpan Agenda</span>
+                  <span>{editingEventId ? 'Simpan Perubahan' : 'Simpan Agenda'}</span>
                 </button>
               </div>
             </form>
@@ -2528,6 +2861,38 @@ export const AdminPortal: React.FC<AdminPortalProps> = ({
                   >
                     <QrCode className="w-4 h-4" />
                     <span>Layar Proyektor</span>
+                  </button>
+                </div>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {selectedAdminEventForDetail.sessionStatus === 'ditutup' &&
+                   selectedAdminEventForDetail.status !== 'selesai' &&
+                   selectedAdminEventForDetail.status !== 'dibatalkan' && (
+                    <button
+                      type="button"
+                      onClick={() => handleFinishEvent(selectedAdminEventForDetail)}
+                      className="px-3 py-2 rounded-xl text-xs font-bold bg-emerald-50 text-emerald-800 border border-emerald-200 cursor-pointer"
+                    >
+                      <CheckCircle2 className="w-3.5 h-3.5 inline mr-1" />
+                      Kegiatan Selesai
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => handleEditEvent(selectedAdminEventForDetail)}
+                    disabled={selectedAdminEventForDetail.status === 'selesai' ||
+                              selectedAdminEventForDetail.status === 'dibatalkan' ||
+                              selectedAdminEventForDetail.sessionStatus === 'aktif'}
+                    className="px-3 py-2 rounded-xl text-xs font-bold bg-slate-50 text-slate-700 border border-slate-200 disabled:opacity-40 cursor-pointer"
+                  >
+                    <Edit2 className="w-3.5 h-3.5 inline mr-1" /> Edit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handleDeleteEvent(selectedAdminEventForDetail)}
+                    disabled={selectedAdminEventForDetail.sessionStatus === 'aktif'}
+                    className="px-3 py-2 rounded-xl text-xs font-bold bg-red-50 text-red-700 border border-red-200 disabled:opacity-40 cursor-pointer"
+                  >
+                    <Trash2 className="w-3.5 h-3.5 inline mr-1" /> Hapus
                   </button>
                 </div>
 

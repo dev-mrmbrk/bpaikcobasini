@@ -1,12 +1,12 @@
 {
-  "projectId": "ai-studio-applet-webapp-4c354",
-  "appId": "1:288454531767:web:69a55b5283a0c9d449cb32",
-  "apiKey": "AIzaSyBNDCM6agDH-Y-AI4idap7dVieUBimizPQ",
-  "authDomain": "ai-studio-applet-webapp-4c354.firebaseapp.com",
-  "firestoreDatabaseId": "ai-studio-remixremixremixb-b3120e22-7fc0-4d1d-8126-b9db5ff68bc0",
-  "storageBucket": "ai-studio-applet-webapp-4c354.firebasestorage.app",
-  "messagingSenderId": "288454531767",
-  "measurementId": "",
+  "projectId": "bpaik-portal-auth-2026",
+  "appId": "1:388390437019:web:fcb8d0304102458a15c63e",
+  "apiKey": "AIzaSyA9Myv3aAjZsZtkzriKE5lXfedYyDmiCf8",
+  "authDomain": "bpaik-portal-auth-2026.firebaseapp.com",
+  "firestoreDatabaseId": "(default)",
+  "storageBucket": "bpaik-portal-auth-2026.firebasestorage.app",
+  "messagingSenderId": "388390437019",
+  "measurementId": "G-L7TMRMQK4Z",
   "oAuthClientId": "288454531767-19km9klob5187sbvfooaj680kkkavajc.apps.googleusercontent.com",
   "recaptchaSiteKey": ""
 }

@@ -27,8 +27,8 @@ export function exportAttendanceToExcel(event: BPAIKEvent, records: AttendanceRe
     ['', '', '', '', '1', '2']
   ];
 
-  // Fill table rows: minimum 50 rows or sortedRecords.length
-  const totalRows = Math.max(50, sortedRecords.length);
+  // Ekspor hanya data yang tersedia; jumlah baris bertambah mengikuti kehadiran.
+  const totalRows = sortedRecords.length;
 
   for (let i = 0; i < totalRows; i++) {
     const rowNumber = i + 1;

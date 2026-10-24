@@ -1,8 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { QrCode, Maximize2, Minimize2, Users, Clock, ShieldCheck, CheckCircle2, AlertTriangle, ArrowLeft, AlertCircle, Play } from 'lucide-react';
 import { BPAIKEvent, AttendanceRecord } from '../types';
-import { db } from '../firebase';
-import { collection, doc, query, where, onSnapshot } from 'firebase/firestore';
+import QRCode from 'qrcode';
 
 interface ProjectorQrViewProps {
   event: BPAIKEvent;
@@ -19,38 +18,84 @@ export const ProjectorQrView: React.FC<ProjectorQrViewProps> = ({ event: initial
   const [isLoadingToken, setIsLoadingToken] = useState<boolean>(true);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
-  // Real-time listener for the event document itself
+  // Poll event state from Worker / D1.
   useEffect(() => {
-    const unsubEvent = onSnapshot(doc(db, 'events', initialEvent.id), (snap) => {
-      if (snap.exists()) {
-        setCurrentEvent({ id: snap.id, ...snap.data() } as BPAIKEvent);
-      }
-    }, (err) => {
-      console.warn('Projector event listener error:', err);
-    });
+    let active = true;
 
-    return () => unsubEvent();
+    const syncEvent = async () => {
+      try {
+        const response = await fetch('/api/events', {
+          method: 'GET',
+          credentials: 'same-origin'
+        });
+        const payload = await response.json() as {
+          success?: boolean;
+          events?: BPAIKEvent[];
+          error?: string;
+        };
+
+        if (!response.ok || payload.success !== true || !Array.isArray(payload.events)) {
+          throw new Error(payload.error || 'Gagal membaca kegiatan.');
+        }
+
+        const freshEvent = payload.events.find(item => item.id === initialEvent.id);
+        if (active && freshEvent) {
+          setCurrentEvent(freshEvent);
+        }
+      } catch (error) {
+        if (active) console.warn('Projector D1 event sync error:', error);
+      }
+    };
+
+    void syncEvent();
+    const interval = setInterval(() => void syncEvent(), 3000);
+
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
   }, [initialEvent.id]);
 
   const isSessionActive = currentEvent.sessionStatus === 'aktif';
 
-  // Fetch dynamic QR token from server
+  // Fetch a short-lived token from Worker; render its QR image in the browser.
   const fetchNewToken = async () => {
     if (!isSessionActive) return;
+
     try {
-      const res = await fetch(`/api/qr/token/${currentEvent.id}?sessionId=${currentEvent.id}_session`);
-      const data = await res.json();
-      if (data.success) {
-        setQrDataUrl(data.qrDataUrl);
-        setTokenString(data.token);
-        setCountdown(10);
-        setErrorMsg(null);
-      } else {
-        setErrorMsg(data.error || 'Gagal memperbarui QR');
+      const response = await fetch(
+        `/api/qr/token/${encodeURIComponent(currentEvent.id)}`,
+        { credentials: 'same-origin' }
+      );
+      const payload = await response.json() as {
+        success?: boolean;
+        token?: string;
+        error?: string;
+      };
+
+      if (!response.ok || payload.success !== true || !payload.token) {
+        throw new Error(payload.error || 'Gagal mengambil token QR.');
       }
-    } catch (err: unknown) {
-      console.error('Fetch QR token error:', err);
-      setErrorMsg('Koneksi ke server terputus saat memperbarui QR');
+
+      const dataUrl = await QRCode.toDataURL(payload.token, {
+        errorCorrectionLevel: 'M',
+        margin: 2,
+        width: 400,
+        color: {
+          dark: '#14532d',
+          light: '#ffffff'
+        }
+      });
+
+      setQrDataUrl(dataUrl);
+      setTokenString(payload.token);
+      setCountdown(10);
+      setErrorMsg(null);
+    } catch (error: unknown) {
+      console.error('Fetch QR token error:', error);
+      setErrorMsg(error instanceof Error
+        ? error.message
+        : 'Koneksi ke server terputus saat memperbarui QR');
     } finally {
       setIsLoadingToken(false);
     }
@@ -60,6 +105,8 @@ export const ProjectorQrView: React.FC<ProjectorQrViewProps> = ({ event: initial
   useEffect(() => {
     if (!isSessionActive) {
       setIsLoadingToken(false);
+      setQrDataUrl(null);
+      setTokenString('');
       return;
     }
 
@@ -80,25 +127,44 @@ export const ProjectorQrView: React.FC<ProjectorQrViewProps> = ({ event: initial
     return () => clearInterval(timer);
   }, [isSessionActive]);
 
-  // Real-time listener for attendees joining this session
+  // Poll attendance records from Worker / D1.
   useEffect(() => {
-    const q = query(
-      collection(db, 'attendanceRecords'),
-      where('eventId', '==', currentEvent.id)
-    );
+    let active = true;
 
-    const unsubscribe = onSnapshot(q, (snapshot) => {
-      const list: AttendanceRecord[] = [];
-      snapshot.forEach(snapDoc => {
-        list.push(snapDoc.data() as AttendanceRecord);
-      });
-      list.sort((a, b) => new Date(b.scanTime).getTime() - new Date(a.scanTime).getTime());
-      setAttendees(list);
-    }, (error) => {
-      console.error('Attendance stream error:', error);
-    });
+    const syncAttendees = async () => {
+      try {
+        const response = await fetch(
+          `/api/attendance?eventId=${encodeURIComponent(currentEvent.id)}`,
+          { credentials: 'same-origin' }
+        );
+        const payload = await response.json() as {
+          success?: boolean;
+          records?: AttendanceRecord[];
+          error?: string;
+        };
 
-    return () => unsubscribe();
+        if (!response.ok || payload.success !== true || !Array.isArray(payload.records)) {
+          throw new Error(payload.error || 'Gagal membaca rekap presensi.');
+        }
+
+        if (active) {
+          const list = [...payload.records].sort(
+            (a, b) => new Date(b.scanTime).getTime() - new Date(a.scanTime).getTime()
+          );
+          setAttendees(list);
+        }
+      } catch (error) {
+        if (active) console.warn('D1 attendance sync error:', error);
+      }
+    };
+
+    void syncAttendees();
+    const interval = setInterval(() => void syncAttendees(), 3000);
+
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
   }, [currentEvent.id]);
 
   const toggleFullscreen = () => {

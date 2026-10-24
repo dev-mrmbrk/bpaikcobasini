@@ -2,8 +2,6 @@ import React, { useRef, useState, useEffect } from 'react';
 import { RefreshCw, CheckCircle, AlertCircle, PenTool, X } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { validateSignatureStrokes, Stroke, Point } from '../utils/signatureValidator';
-import { updateDoc, doc } from 'firebase/firestore';
-import { db } from '../firebase';
 import { AttendanceRecord } from '../types';
 
 interface SignaturePadModalProps {
@@ -44,7 +42,7 @@ export const SignaturePadModal: React.FC<SignaturePadModalProps> = ({
     if (ctx) {
       ctx.scale(dpr, dpr);
       ctx.strokeStyle = '#14532d'; // Dark forest green ink
-      ctx.lineWidth = 1.75;
+      ctx.lineWidth = 3.25;
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
       redrawAllStrokes(ctx);
@@ -165,16 +163,25 @@ export const SignaturePadModal: React.FC<SignaturePadModalProps> = ({
       const canvas = canvasRef.current;
       const dataUrl = canvas ? canvas.toDataURL('image/png') : '';
 
-      // Update Firestore record
-      const recordRef = doc(db, 'attendanceRecords', record.id);
-      const nowIso = new Date().toISOString();
+      // Persist signature through authenticated Worker / D1 API
+      const response = await fetch(
+        `/api/attendance/${encodeURIComponent(record.id)}/signature`,
+        {
+          method: 'PUT',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ signatureData: dataUrl })
+        }
+      );
 
-      await updateDoc(recordRef, {
-        signatureStatus: 'TERKONFIRMASI',
-        signatureData: dataUrl,
-        signatureTimestamp: nowIso,
-        updatedAt: nowIso
-      });
+      const payload = await response.json() as {
+        success?: boolean;
+        error?: string;
+      };
+
+      if (!response.ok || payload.success !== true) {
+        throw new Error(payload.error || 'Gagal menyimpan tanda tangan ke D1.');
+      }
 
       // Confetti celebration
       confetti({

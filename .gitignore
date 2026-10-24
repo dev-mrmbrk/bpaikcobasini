@@ -9,3 +9,6 @@ coverage/
 
 # Local Wrangler state and D1 database
 .wrangler/
+
+# Local Wrangler secrets
+.dev.vars

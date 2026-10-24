@@ -29,8 +29,6 @@ import {
   Loader2
 } from 'lucide-react';
 import QRCode from 'qrcode';
-import { collection, query, where, onSnapshot, addDoc } from 'firebase/firestore';
-import { db } from '../firebase';
 import { useAuth } from '../context/AuthContext';
 import { BPAIKUser, BPAIKEvent, AttendanceRecord, LeaveRequest } from '../types';
 import { getCardQrCredential } from '../utils/cardQr';
@@ -148,21 +146,38 @@ export const PegawaiView: React.FC<PegawaiViewProps> = ({
   }, [user]);
 
   // Real-time listener for leave requests
+  // Sync own leave requests from Worker / D1
   useEffect(() => {
-    if (!user.id && !user.email) return;
-    const q = query(
-      collection(db, 'leaveRequests'),
-      where('userEmail', '==', user.email.toLowerCase())
-    );
-    const unsub = onSnapshot(q, (snap) => {
-      const list: LeaveRequest[] = [];
-      snap.forEach(d => list.push({ id: d.id, ...d.data() } as LeaveRequest));
-      setMyLeaveRequests(list);
-    }, (err) => {
-      console.warn('Leave request listener error:', err);
-    });
-    return () => unsub();
-  }, [user]);
+    let active = true;
+
+    const loadLeaves = async () => {
+      try {
+        const response = await fetch('/api/leaves', { credentials: 'same-origin' });
+        const payload = await response.json() as {
+          success?: boolean;
+          leaves?: LeaveRequest[];
+          error?: string;
+        };
+        if (!response.ok || payload.success !== true || !Array.isArray(payload.leaves)) {
+          throw new Error(payload.error || 'Gagal membaca pengajuan izin.');
+        }
+        if (active) {
+          setMyLeaveRequests([...payload.leaves].sort(
+            (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+          ));
+        }
+      } catch (error) {
+        if (active) console.error('D1 leave sync error:', error);
+      }
+    };
+
+    void loadLeaves();
+    const interval = setInterval(() => void loadLeaves(), 5000);
+    return () => {
+      active = false;
+      clearInterval(interval);
+    };
+  }, [user.id]);
 
   // User attendance history
   const myAttendanceRecords = attendanceRecords.filter(
@@ -297,7 +312,24 @@ export const PegawaiView: React.FC<PegawaiViewProps> = ({
         updatedAt: new Date().toISOString()
       };
 
-      await addDoc(collection(db, 'leaveRequests'), newLeave);
+      const response = await fetch('/api/leaves', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          eventId: newLeave.eventId,
+          reason: newLeave.reason
+        })
+      });
+
+      const payload = await response.json() as {
+        success?: boolean;
+        error?: string;
+      };
+
+      if (!response.ok || payload.success !== true) {
+        throw new Error(payload.error || 'Gagal menyimpan pengajuan izin ke D1.');
+      }
       setLeaveSuccessMsg('Pengajuan izin berhasil dikirim. Menunggu persetujuan (ACC) dari Admin BPAIK.');
       setLeaveReason('');
       setTimeout(() => {
@@ -376,9 +408,7 @@ export const PegawaiView: React.FC<PegawaiViewProps> = ({
       {/* 1. TOP STICKY HEADER - Flush at top, no floating gap */}
       <header className="sticky top-0 z-30 w-full bg-[#0f613c] border-b border-[#093d26] shadow-md px-4 sm:px-8 py-3 text-white flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <div className="w-9 h-9 rounded-xl bg-[#F4C542] text-slate-950 font-black text-base flex items-center justify-center font-islamic border border-amber-300 shadow-xs">
-            P
-          </div>
+          <div className="w-9 h-9 rounded-xl bg-[#F4C542] text-slate-950 font-black text-base flex items-center justify-center font-islamic border border-amber-300 shadow-xs"><img src="/images/logoBPAIK.png" alt="Logo BPAIK" className="w-full h-full object-contain" /></div>
           <div>
             <h1 className="text-base sm:text-lg font-bold font-islamic tracking-tight text-white leading-tight flex items-center gap-1.5">
               Portal<span className="text-[#F4C542]">BPAIK</span>
@@ -519,8 +549,16 @@ export const PegawaiView: React.FC<PegawaiViewProps> = ({
                   </p>
                 </div>
 
-                <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl bg-emerald-100/70 border border-emerald-300 flex items-center justify-center text-emerald-800 shrink-0">
-                  <span className="font-islamic text-sm sm:text-base font-bold">UNISA</span>
+                <div className="w-10 h-10 sm:w-12 sm:h-12 rounded-xl sm:rounded-2xl bg-emerald-100/70 border border-emerald-300 overflow-hidden flex items-center justify-center text-emerald-800 shrink-0">
+                  {user.avatarUrl ? (
+                    <img
+                      src={user.avatarUrl}
+                      alt={`Foto profil ${user.name}`}
+                      className="w-full h-full object-cover"
+                    />
+                  ) : (
+                    <UserIcon className="w-6 h-6 sm:w-7 sm:h-7" aria-hidden="true" />
+                  )}
                 </div>
               </div>
             </div>
@@ -984,7 +1022,7 @@ export const PegawaiView: React.FC<PegawaiViewProps> = ({
               <div className="bg-[#073922] text-white p-3.5 flex items-center gap-2.5 shrink-0">
                 <div className="w-11 h-11 rounded-full bg-white p-1 shrink-0 flex items-center justify-center shadow-xs">
                   <img
-                    src="/assets/aistudio/image_4136b24a.png"
+                    src="/images/logoBPAIK.png"
                     alt="Logo UNISA"
                     className="w-full h-full object-contain"
                     onError={(e) => {

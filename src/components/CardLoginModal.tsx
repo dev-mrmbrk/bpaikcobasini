@@ -262,50 +262,6 @@ export const CardLoginModal: React.FC<CardLoginModalProps> = ({
                 </div>
               )}
 
-              {/* Quick Scan Demo Buttons */}
-              <div className="w-full mt-4 pt-3 border-t border-slate-100">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-[10px] font-bold text-slate-500 uppercase font-mono tracking-wider">
-                    Uji Pindai Cepat Kartu:
-                  </span>
-                  <span className="text-[9px] bg-amber-100 text-amber-900 font-extrabold px-2 py-0.5 rounded-full">
-                    Demo QR
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    disabled={isVerifying}
-                    onClick={() => handleProcessCode('BPAIK-KARTU-0415038102-HAMZAH')}
-                    className="tactile-3d-btn-accent p-2 rounded-xl text-left cursor-pointer flex flex-col items-start disabled:opacity-50"
-                  >
-                    <span className="text-xs font-bold text-slate-950 font-islamic flex items-center gap-1">
-                      <CreditCard className="w-3.5 h-3.5" />
-                      <span>Kartu Dr. Hamzah</span>
-                    </span>
-                    <span className="text-[10px] text-slate-700 font-mono mt-0.5 truncate w-full">
-                      Peserta (Dosen)
-                    </span>
-                  </button>
-
-                  <button
-                    type="button"
-                    disabled={isVerifying}
-                    onClick={() => handleProcessCode('BPAIK-KARTU-NPP0422019800')}
-                    className="tactile-3d-btn-white p-2 rounded-xl text-left cursor-pointer flex flex-col items-start border border-slate-200 disabled:opacity-50"
-                  >
-                    <span className="text-xs font-bold text-[#0f613c] font-islamic flex items-center gap-1">
-                      <CreditCard className="w-3.5 h-3.5" />
-                      <span>Kartu Admin BPAIK</span>
-                    </span>
-                    <span className="text-[10px] text-slate-500 font-mono mt-0.5 truncate w-full">
-                      Administrator
-                    </span>
-                  </button>
-                </div>
-              </div>
-
               {/* Manual Input Toggle */}
               <div className="w-full mt-3">
                 {!showManualInput ? (

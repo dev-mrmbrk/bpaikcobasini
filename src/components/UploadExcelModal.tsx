@@ -1,7 +1,5 @@
 import React, { useState, useRef } from 'react';
 import { X, Upload, FileSpreadsheet, Download, CheckCircle2, AlertCircle, RefreshCw, Users, Trash2 } from 'lucide-react';
-import { db } from '../firebase';
-import { doc, setDoc, addDoc, collection } from 'firebase/firestore';
 import { BPAIKUser } from '../types';
 import { parseParticipantExcelFile, downloadParticipantTemplateExcel } from '../utils/reportExport';
 
@@ -12,7 +10,6 @@ interface UploadExcelModalProps {
 }
 
 export const UploadExcelModal: React.FC<UploadExcelModalProps> = ({
-  currentUser,
   onSuccess,
   onClose
 }) => {
@@ -51,45 +48,63 @@ export const UploadExcelModal: React.FC<UploadExcelModalProps> = ({
 
     setIsImporting(true);
     let successCount = 0;
-    const nowIso = new Date().toISOString();
+    const importErrors: string[] = [...parseErrors];
 
     try {
       for (const userCandidate of parsedUsers) {
-        // Unique user id
         const cleanEmail = userCandidate.email.toLowerCase().trim();
-        const userId = `user_${cleanEmail.replace(/[^a-zA-Z0-9]/g, '_')}`;
 
-        const fullUser: BPAIKUser = {
-          ...userCandidate,
-          id: userId,
-          createdAt: nowIso,
-          updatedAt: nowIso
-        };
+        try {
+          const response = await fetch('/api/users', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              name: userCandidate.name,
+              email: cleanEmail,
+              npp: userCandidate.npp,
+              jabatan: userCandidate.jabatan,
+              whatsapp: userCandidate.whatsapp,
+              role: userCandidate.role,
+              status: userCandidate.status
+            })
+          });
 
-        // Write directly to cloud Firestore database (Zero local storage!)
-        await setDoc(doc(db, 'users', userId), fullUser, { merge: true });
-        successCount++;
+          const payload = await response.json() as {
+            success?: boolean;
+            user?: BPAIKUser;
+            error?: string;
+          };
+
+          if (!response.ok || payload.success !== true || !payload.user) {
+            importErrors.push(
+              `${cleanEmail}: ${payload.error || 'Gagal menyimpan ke D1.'}`
+            );
+            continue;
+          }
+
+          successCount++;
+        } catch (error) {
+          importErrors.push(
+            `${cleanEmail}: ${
+              error instanceof Error ? error.message : 'Kesalahan jaringan.'
+            }`
+          );
+        }
       }
 
-      // Add audit log to Firestore
-      await addDoc(collection(db, 'auditLogs'), {
-        action: 'IMPORT_USERS_EXCEL',
-        actorEmail: currentUser.email,
-        actorName: currentUser.name,
-        actorRole: currentUser.role,
-        targetType: 'USERS_BATCH',
-        targetId: `batch_${Date.now()}`,
-        description: `Berhasil mengimpor ${successCount} peserta dari file Excel "${selectedFile?.name}". Disimpan ke database cloud Firestore.`,
-        timestamp: nowIso
+      setImportSummary({
+        total: parsedUsers.length,
+        success: successCount
       });
+      setParseErrors(importErrors);
 
-      setImportSummary({ total: parsedUsers.length, success: successCount });
-      setTimeout(() => {
-        onSuccess();
-      }, 1500);
+      if (successCount > 0) {
+        setTimeout(() => onSuccess(), 1500);
+      }
     } catch (err) {
       console.error('Import excel error:', err);
-      alert('Terjadi kesalahan saat mengimpor data ke server database.');
+      alert('Terjadi kesalahan saat mengimpor data ke D1.');
     } finally {
       setIsImporting(false);
     }

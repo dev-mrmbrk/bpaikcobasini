@@ -1,7 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
+import { BrowserQRCodeReader } from '@zxing/browser';
 import { Camera, X, AlertCircle, RefreshCw, CheckCircle2, ShieldCheck, KeyRound } from 'lucide-react';
-import { db } from '../firebase';
-import { doc, getDoc, addDoc, collection } from 'firebase/firestore';
 import { BPAIKUser, BPAIKEvent, AttendanceRecord } from '../types';
 
 interface QrScannerModalProps {
@@ -33,7 +32,6 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
   } | null>(null);
 
   const videoRef = useRef<HTMLVideoElement | null>(null);
-  const streamRef = useRef<MediaStream | null>(null);
 
   // Synchronize selectedEventId if activeEvents changes
   useEffect(() => {
@@ -42,50 +40,60 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
     }
   }, [activeEvents, selectedEventId]);
 
-  // Initialize camera stream only if there are active events
+  // Start camera and actively decode QR codes from its video stream.
   useEffect(() => {
     if (activeEvents.length === 0) return;
 
     let active = true;
+    let alreadyDecoded = false;
+    let controls: { stop: () => void } | undefined;
+    const reader = new BrowserQRCodeReader();
 
     async function startCamera() {
       try {
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        if (!navigator.mediaDevices?.getUserMedia) {
           setCameraError('Perangkat tidak mendukung akses kamera langsung');
           setShowManualInput(true);
           return;
         }
 
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment' }
-        });
+        const video = videoRef.current;
+        if (!video) return;
 
-        if (!active) {
-          stream.getTracks().forEach(t => t.stop());
-          return;
-        }
+        controls = await reader.decodeFromVideoDevice(
+          undefined,
+          video,
+          (result) => {
+            if (!active || alreadyDecoded || !result) return;
 
-        streamRef.current = stream;
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          videoRef.current.play().catch(() => {});
+            const value = result.getText().trim();
+            if (!value) return;
+
+            alreadyDecoded = true;
+            controls?.stop();
+            void handleProcessToken(value);
+          }
+        );
+
+        if (active) {
+          setCameraError(null);
+          setShowManualInput(false);
         }
       } catch (err) {
-        console.warn('Camera access denied or unavailable:', err);
-        setCameraError('Kamera tidak dapat diakses atau izin ditolak');
+        if (!active) return;
+        console.warn('QR camera decoder error:', err);
+        setCameraError('Kamera tidak dapat membaca QR. Periksa izin kamera atau gunakan input manual.');
         setShowManualInput(true);
       }
     }
 
-    startCamera();
+    void startCamera();
 
     return () => {
       active = false;
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(t => t.stop());
-      }
+      controls?.stop();
     };
-  }, [activeEvents.length]);
+  }, [activeEvents.length, selectedEventId]);
 
   const handleProcessToken = async (tokenString: string) => {
     if (!tokenString.trim()) {
@@ -98,140 +106,61 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
       return;
     }
 
+    const targetEvent = activeEvents.find(event => event.id === selectedEventId);
+    if (!targetEvent) {
+      setErrorMessage('Pilih kegiatan yang sedang aktif sebelum memindai QR.');
+      return;
+    }
+
     setIsProcessing(true);
     setErrorMessage(null);
 
     try {
-      // 1. Verify token with server-side validation
-      const res = await fetch('/api/qr/verify-token', {
+      const response = await fetch('/api/attendance/scan', {
         method: 'POST',
+        credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           token: tokenString.trim(),
-          eventId: selectedEventId || undefined
+          eventId: selectedEventId
         })
       });
 
-      const data = await res.json();
-      if (!data.valid) {
-        throw new Error(data.error || 'Token QR tidak valid atau sudah kedaluwarsa');
-      }
-
-      const verifiedEventId = data.eventId;
-      // Strict matching: must belong to an active session
-      const targetEvent = activeEvents.find(e => e.id === verifiedEventId);
-      
-      if (!targetEvent) {
-        throw new Error('Kode QR yang dipindai tidak sesuai dengan sesi kegiatan yang sedang dibuka saat ini.');
-      }
-
-      // Check if session is explicitly open
-      if (targetEvent.sessionStatus !== 'aktif') {
-        throw new Error('Sesi presensi untuk kegiatan ini belum diaktifkan oleh Admin.');
-      }
-
-      // Check if session has expired based on duration (calculated from sessionOpenedAt, independent of event hours)
-      if (targetEvent.sessionOpenedAt) {
-        const openedAtMs = new Date(targetEvent.sessionOpenedAt).getTime();
-        const durationMs = (targetEvent.sessionDurationMinutes || 60) * 60 * 1000;
-        const nowMs = Date.now();
-        if (nowMs > (openedAtMs + durationMs)) {
-          throw new Error(`Batas waktu sesi scan (${targetEvent.sessionDurationMinutes} menit) telah berakhir sejak sesi dibuka.`);
-        }
-      }
-
-      const eventTitle = targetEvent.title || 'Kegiatan BPAIK';
-      const eventDate = targetEvent.date || new Date().toISOString().split('T')[0];
-
-      // 2. Check if attendance already recorded (prevent duplicate attendance)
-      const sanitizedEmail = user.email.toLowerCase().replace(/[^a-zA-Z0-9]/g, '_');
-      const recordId = `${verifiedEventId}_${sanitizedEmail}`;
-      const recordRef = doc(db, 'attendanceRecords', recordId);
-      const existingSnap = await getDoc(recordRef);
-
-      const nowIso = new Date().toISOString();
-
-      if (existingSnap.exists()) {
-        const existingData = existingSnap.data() as AttendanceRecord;
-        if (existingData.signatureStatus === 'TERKONFIRMASI') {
-          setConfirmedNotice({
-            title: 'Presensi Anda Sudah Sah & Terkonfirmasi',
-            message: `Anda sudah berhasil melakukan presensi dan tanda tangan digital untuk kegiatan "${eventTitle}".`,
-            scanTime: existingData.scanTime,
-            record: existingData
-          });
-          return;
-        } else {
-          onAttendanceRecorded(existingData);
-          return;
-        }
-      }
-
-      // 3. Create fresh attendance record
-      const newRecord: AttendanceRecord = {
-        id: recordId,
-        eventId: verifiedEventId,
-        eventTitle,
-        eventDate,
-        userId: user.id,
-        userEmail: user.email,
-        userName: user.name,
-        userNpp: user.npp,
-        userJabatan: user.jabatan,
-        userWhatsapp: user.whatsapp,
-        scanTime: nowIso,
-        attendanceStatus: 'HADIR',
-        signatureStatus: 'MENUNGGU_KONFIRMASI',
-        verifiedBy: 'system-qr',
-        createdAt: nowIso,
-        updatedAt: nowIso
+      const payload = await response.json() as {
+        success?: boolean;
+        duplicate?: boolean;
+        record?: AttendanceRecord;
+        error?: string;
       };
 
-      await doc(db, 'attendanceRecords', recordId);
-      const { setDoc: writeDoc } = await import('firebase/firestore');
-      await writeDoc(recordRef, newRecord);
+      if (!response.ok || payload.success !== true || !payload.record) {
+        throw new Error(payload.error || 'Gagal menyimpan presensi ke server.');
+      }
 
-      await addDoc(collection(db, 'auditLogs'), {
-        action: 'SCAN_QR_SUCCESS',
-        actorEmail: user.email,
-        actorName: user.name,
-        actorRole: user.role,
-        targetType: 'ATTENDANCE_RECORD',
-        targetId: recordId,
-        description: `Presensi berhasil via QR proyektor untuk kegiatan "${eventTitle}". Menunggu tanda tangan.`,
-        timestamp: nowIso
-      });
+      const record = payload.record;
 
-      onAttendanceRecorded(newRecord);
+      if (record.signatureStatus === 'TERKONFIRMASI') {
+        setConfirmedNotice({
+          title: 'Presensi Anda Sudah Sah & Terkonfirmasi',
+          message: `Presensi untuk kegiatan "${record.eventTitle}" sudah tercatat dan tanda tangan telah dikonfirmasi.`,
+          scanTime: record.scanTime,
+          record
+        });
+        return;
+      }
+
+      // Record baru maupun duplikat yang belum bertanda tangan akan menuju alur tanda tangan.
+      onAttendanceRecorded(record);
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Gagal memverifikasi kehadiran';
+      const msg = err instanceof Error
+        ? err.message
+        : 'Gagal memverifikasi kehadiran';
       setErrorMessage(msg);
     } finally {
       setIsProcessing(false);
     }
   };
 
-  // Helper for quick testing / simulation directly from the active session
-  const handleQuickTestScan = async () => {
-    if (!selectedEventId) {
-      setErrorMessage('Pilih sesi kegiatan yang sedang aktif');
-      return;
-    }
-    setIsProcessing(true);
-    try {
-      const res = await fetch(`/api/qr/token/${selectedEventId}`);
-      const data = await res.json();
-      if (data.token) {
-        await handleProcessToken(data.token);
-      } else {
-        throw new Error('Gagal mengambil token aktif kegiatan');
-      }
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Gagal melakukan scan presensi';
-      setErrorMessage(msg);
-      setIsProcessing(false);
-    }
-  };
 
   return (
     <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex flex-col justify-between p-4 sm:p-6 text-white animate-in fade-in duration-150">
@@ -373,19 +302,7 @@ export const QrScannerModal: React.FC<QrScannerModalProps> = ({
       {activeEvents.length > 0 && (
         <div className="w-full max-w-sm mx-auto flex flex-col gap-2.5 z-10">
           {/* Quick Simulated Scan for headless testing & ease of use */}
-          <button
-            type="button"
-            onClick={handleQuickTestScan}
-            disabled={isProcessing}
-            className="w-full py-3 px-4 rounded-xl bg-amber-500 hover:bg-amber-600 active:bg-amber-700 text-slate-950 font-bold text-xs flex items-center justify-center gap-2 shadow-lg transition-transform active:scale-95 disabled:opacity-50 cursor-pointer"
-          >
-            {isProcessing ? (
-              <RefreshCw className="w-4 h-4 animate-spin" />
-            ) : (
-              <ShieldCheck className="w-4 h-4 text-emerald-950" />
-            )}
-            <span>Pindai QR Proyektor (Verifikasi Sesi)</span>
-          </button>
+
 
           {/* Toggle Manual Token Entry */}
           {showManualInput ? (

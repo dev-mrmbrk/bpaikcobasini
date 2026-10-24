@@ -125,7 +125,7 @@ export const SuratIzinPdfModal: React.FC<SuratIzinPdfModalProps> = ({
               {/* Logo UNISA */}
               <div className="w-20 h-20 shrink-0 flex items-center justify-center">
                 <img
-                  src="/assets/aistudio/image_4136b24a.png"
+                  src="/images/logoBPAIK.png"
                   alt="Logo BPAIK UNISA Bandung"
                   className="w-full h-full object-contain"
                   onError={(e) => {

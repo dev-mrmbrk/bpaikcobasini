@@ -1,12 +1,12 @@
 import React, { useState } from 'react';
-import { ShieldCheck, AlertCircle, ArrowRight, UserCheck, HelpCircle, Camera, QrCode } from 'lucide-react';
+import { ShieldCheck, AlertCircle, ArrowRight, HelpCircle, Camera } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { Footer } from './Footer';
 
 import { CardLoginModal } from './CardLoginModal';
 
 export const LoginScreen: React.FC = () => {
-  const { loginWithGoogle, loginAsDemo, isLoading, error, rememberMe, setRememberMe } = useAuth();
+  const { loginWithGoogle, isLoading, error, rememberMe, setRememberMe } = useAuth();
   const [showHelp, setShowHelp] = useState(false);
   const [showCardScanner, setShowCardScanner] = useState(false);
 
@@ -222,48 +222,6 @@ export const LoginScreen: React.FC = () => {
                   Gunakan akun Google aktif Anda yang terdaftar pada BPAIK Universitas 'Aisyiyah Bandung. Anda juga dapat menggunakan QR pada kartu identitas peserta kegiatan yang di terbitkan oleh PortalBPAIK.
                 </div>
               )}
-            </div>
-
-            {/* Quick Demo Access (Admin & Peserta) */}
-            <div className="pt-3 border-t border-slate-200">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-500 font-mono">
-                  Uji Akses Cepat (Demo)
-                </span>
-                <span className="text-[9px] bg-emerald-100 text-[#0f613c] font-black px-2 py-0.5 rounded-full border border-emerald-200">
-                  2 Akun Resmi
-                </span>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2 sm:gap-3">
-                <button
-                  type="button"
-                  onClick={() => loginAsDemo('ADMIN')}
-                  className="tactile-3d-btn-white p-2.5 rounded-xl flex flex-col items-start text-left cursor-pointer transition-all border border-slate-200 hover:border-emerald-500"
-                >
-                  <div className="flex items-center gap-1.5 text-[#0f613c] font-black text-xs font-islamic">
-                    <ShieldCheck className="w-3.5 h-3.5 text-[#0f613c]" />
-                    <span>1. Admin BPAIK</span>
-                  </div>
-                  <span className="text-[10px] text-slate-500 font-medium mt-0.5 truncate w-full">
-                    Kewenangan Penuh
-                  </span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => loginAsDemo('PESERTA')}
-                  className="tactile-3d-btn-accent p-2.5 rounded-xl flex flex-col items-start text-left cursor-pointer transition-all"
-                >
-                  <div className="flex items-center gap-1.5 text-slate-950 font-black text-xs font-islamic">
-                    <UserCheck className="w-3.5 h-3.5 text-slate-900" />
-                    <span>2. Peserta Kajian</span>
-                  </div>
-                  <span className="text-[10px] text-emerald-950/80 font-bold mt-0.5 truncate w-full">
-                    Dr. Hamzah (Dosen)
-                  </span>
-                </button>
-              </div>
             </div>
 
             {/* Micro Note */}

@@ -261,7 +261,7 @@ export const ParticipantCardModal: React.FC<ParticipantCardModalProps> = ({
                 <div className="bg-[#073922] text-white p-3 flex items-center gap-2.5 shrink-0">
                   <div className="w-11 h-11 rounded-full bg-white p-1 shrink-0 flex items-center justify-center shadow-xs">
                     <img
-                      src="/assets/aistudio/image_4136b24a.png"
+                      src="/images/logoBPAIK.png"
                       alt="Logo UNISA"
                       className="w-full h-full object-contain"
                       onError={(e) => {

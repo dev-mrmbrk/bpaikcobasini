@@ -16,73 +16,19 @@ import {
 /**
  * Authentic vector emblem for Universitas 'Aisyiyah Bandung (UNISA Bandung) & BPAIK
  */
-export const UnisaEmblem: React.FC<{ size?: number; className?: string }> = ({ 
-  size = 48, 
-  className = '' 
-}) => {
-  return (
-    <svg 
-      width={size} 
-      height={size} 
-      viewBox="0 0 100 100" 
-      fill="none" 
-      xmlns="http://www.w3.org/2000/svg"
-      className={`shrink-0 drop-shadow-sm select-none ${className}`}
-    >
-      <defs>
-        {/* Gold radiant gradient */}
-        <linearGradient id="unisaGoldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="#FFE066" />
-          <stop offset="50%" stopColor="#F4C542" />
-          <stop offset="100%" stopColor="#C99700" />
-        </linearGradient>
-        {/* Emerald depth gradient */}
-        <linearGradient id="unisaGreenGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-          <stop offset="0%" stopColor="#148352" />
-          <stop offset="100%" stopColor="#0a462b" />
-        </linearGradient>
-      </defs>
-
-      {/* 12 Radiant Rays of Muhammadiyah / 'Aisyiyah Sun */}
-      <g transform="translate(50, 50)">
-        {[0, 30, 60, 90, 120, 150, 180, 210, 240, 270, 300, 330].map((deg) => (
-          <path
-            key={deg}
-            d="M 0 -48 L 4 -32 L -4 -32 Z"
-            fill="url(#unisaGoldGrad)"
-            transform={`rotate(${deg})`}
-          />
-        ))}
-      </g>
-
-      {/* Outer Golden Ring */}
-      <circle cx="50" cy="50" r="34" fill="url(#unisaGoldGrad)" />
-
-      {/* Inner Emerald Circle */}
-      <circle cx="50" cy="50" r="30" fill="url(#unisaGreenGrad)" stroke="#FFE066" strokeWidth="1.2" />
-
-      {/* Concentric Golden Halo */}
-      <circle cx="50" cy="50" r="23" fill="none" stroke="url(#unisaGoldGrad)" strokeWidth="1" strokeDasharray="3 2" />
-
-      {/* Central Symbol: Radiant Sun Center with Crescent & Arabic Motif */}
-      <circle cx="50" cy="50" r="16" fill="#fefce8" />
-      
-      {/* Central Emblem - Stylized Islamic Calligraphy / Sunburst */}
-      <path 
-        d="M 50 37 C 44 37 40 42 40 48 C 40 55 45 61 52 61 C 55 61 58 59 60 57 C 56 58 52 56 51 52 C 50 48 53 44 57 43 C 55 39 53 37 50 37 Z" 
-        fill="#0f613c" 
-      />
-      <circle cx="52" cy="45" r="2.5" fill="#C99700" />
-
-      {/* Subtle Star Accent */}
-      <path
-        d="M 50 39 L 51 42 L 54 42 L 51.5 44 L 52.5 47 L 50 45 L 47.5 47 L 48.5 44 L 46 42 L 49 42 Z"
-        fill="#F4C542"
-        transform="scale(0.6) translate(33, 30)"
-      />
-    </svg>
-  );
-};
+export const UnisaEmblem: React.FC<{ size?: number; className?: string }> = ({
+  size = 48,
+  className = ''
+}) => (
+  <img
+    src="/images/logoBPAIK.png"
+    alt="Logo BPAIK"
+    width={size}
+    height={size}
+    className={`object-contain ${className}`}
+    loading="eager"
+  />
+);
 
 export const Footer: React.FC = () => {
   return (
@@ -101,14 +47,14 @@ export const Footer: React.FC = () => {
               </div>
               <div>
                 <h3 className="font-extrabold font-islamic text-base sm:text-lg text-white tracking-wide leading-tight">
-                  UNIVERSITAS 'AISYIYAH BANDUNG
+                  PortalBPAIK
                 </h3>
                 <p className="text-xs font-semibold text-[#F4C542] tracking-wide mt-0.5 font-islamic">
-                  Badan Pengembangan Al-Islam & Kemuhammadiyahan (BPAIK)
+                  Badan Pengembangan Al-Islam & Kemuhammadiyahan
                 </p>
                 <div className="flex items-center gap-2 mt-1">
                   <span className="text-[10px] bg-emerald-950/80 text-emerald-300 px-2 py-0.5 rounded border border-emerald-700/60 font-mono font-medium">
-                    PortalBPAIK v2.4
+                    VersiWeb v1.1
                   </span>
                   <span className="text-[10px] text-emerald-300/80 font-medium font-islamic">
                     Berkemajuan & Berakhlak Mulia
@@ -151,7 +97,7 @@ export const Footer: React.FC = () => {
               </li>
               <li className="flex items-center gap-2 hover:text-white transition-colors">
                 <span className="w-1.5 h-1.5 rounded-full bg-[#F4C542]" />
-                <span>Kartu Identitas Digital KTP</span>
+                <span>Kartu Identitas Digital</span>
               </li>
               <li className="flex items-center gap-2 hover:text-white transition-colors">
                 <span className="w-1.5 h-1.5 rounded-full bg-[#F4C542]" />

@@ -19,9 +19,11 @@ export const AttendancePdfModal: React.FC<AttendancePdfModalProps> = ({
   const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
 
   // Filter and sort records
-  const sortedRecords = [...records].sort(
-    (a, b) => new Date(a.scanTime).getTime() - new Date(b.scanTime).getTime()
-  );
+  const sortedRecords = records
+    .filter(record => record.attendanceStatus === 'HADIR')
+    .sort(
+      (a, b) => new Date(a.scanTime).getTime() - new Date(b.scanTime).getTime()
+    );
 
   const handlePrint = () => {
     window.print();
@@ -48,14 +50,15 @@ export const AttendancePdfModal: React.FC<AttendancePdfModalProps> = ({
       });
     } catch (err) {
       console.error('PDF export error:', err);
-      alert('Gagal mengunduh file PDF otomatis. Anda tetap dapat menggunakan tombol Cetak / Simpan PDF.');
+      alert('PDF otomatis gagal dibuat. Dialog cetak akan dibuka; pilih "Simpan sebagai PDF".');
+      window.print();
     } finally {
       setIsDownloadingPdf(false);
     }
   };
 
-  // Generate at least 50 rows or length of records
-  const totalRows = Math.max(50, sortedRecords.length);
+  // Tampilkan sesuai jumlah data yang tersedia; baris bertambah otomatis.
+  const totalRows = sortedRecords.length;
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-xs flex flex-col items-center justify-center p-2 sm:p-4 overflow-y-auto">
@@ -135,7 +138,7 @@ export const AttendancePdfModal: React.FC<AttendancePdfModalProps> = ({
               {/* Logo / Badge UNISA / Muhammadiyah */}
               <div className="w-16 h-16 sm:w-20 sm:h-20 shrink-0 flex items-center justify-center">
                 <img
-                  src="/assets/aistudio/image_4136b24a.png"
+                  src="/images/logoBPAIK.png"
                   alt="Logo BPAIK UNISA Bandung"
                   className="w-full h-full object-contain"
                   onError={(e) => {
@@ -228,7 +231,7 @@ export const AttendancePdfModal: React.FC<AttendancePdfModalProps> = ({
                   const isOdd = rowNum % 2 !== 0;
 
                   return (
-                    <tr key={rowNum} className="border border-slate-900 text-slate-900 h-9">
+                    <tr key={rowNum} className="border border-slate-900 text-slate-900 h-24">
                       {/* No */}
                       <td className="border border-slate-900 text-center font-semibold text-[11px] p-1 font-mono">
                         {rowNum}
@@ -256,7 +259,7 @@ export const AttendancePdfModal: React.FC<AttendancePdfModalProps> = ({
                       </td>
 
                       {/* Tanda Tangan Kolom 1 (Ganjil: 1, 3, 5...) */}
-                      <td className="border border-slate-900 p-0.5 relative text-left align-top w-32 h-11">
+                      <td className="border border-slate-900 p-1 relative text-left align-top w-32 h-24">
                         {isOdd ? (
                           <div className="flex flex-col h-full justify-between">
                             <span className="text-[9px] font-bold text-slate-500 font-mono leading-none pl-0.5 pt-0.5">
@@ -270,7 +273,7 @@ export const AttendancePdfModal: React.FC<AttendancePdfModalProps> = ({
                               <img
                                 src={rec.signatureData}
                                 alt={`TTD ${rec.userName}`}
-                                className="h-9 w-full object-contain mx-auto -mt-2 p-0.5"
+                                className="h-20 w-full object-contain mx-auto p-0.5"
                               />
                             ) : rec && rec.signatureStatus === 'TERKONFIRMASI' ? (
                               <span className="text-[9px] font-bold text-emerald-800 text-center block pb-0.5">
@@ -282,7 +285,7 @@ export const AttendancePdfModal: React.FC<AttendancePdfModalProps> = ({
                       </td>
 
                       {/* Tanda Tangan Kolom 2 (Genap: 2, 4, 6...) */}
-                      <td className="border border-slate-900 p-0.5 relative text-left align-top w-32 h-11">
+                      <td className="border border-slate-900 p-1 relative text-left align-top w-32 h-24">
                         {!isOdd ? (
                           <div className="flex flex-col h-full justify-between">
                             <span className="text-[9px] font-bold text-slate-500 font-mono leading-none pl-0.5 pt-0.5">
@@ -296,7 +299,7 @@ export const AttendancePdfModal: React.FC<AttendancePdfModalProps> = ({
                               <img
                                 src={rec.signatureData}
                                 alt={`TTD ${rec.userName}`}
-                                className="h-9 w-full object-contain mx-auto -mt-2 p-0.5"
+                                className="h-20 w-full object-contain mx-auto p-0.5"
                               />
                             ) : rec && rec.signatureStatus === 'TERKONFIRMASI' ? (
                               <span className="text-[9px] font-bold text-emerald-800 text-center block pb-0.5">
@@ -317,7 +320,7 @@ export const AttendancePdfModal: React.FC<AttendancePdfModalProps> = ({
           <div className="pt-6 mt-4 flex flex-col sm:flex-row items-start justify-between gap-6 text-xs text-slate-800 break-inside-avoid">
             <div className="space-y-1">
               <p className="font-bold text-slate-900">Catatan Kehadiran:</p>
-              <p className="text-[11px] text-slate-600">Total Hadir Terverifikasi: <strong>{records.length} Peserta</strong></p>
+              <p className="text-[11px] text-slate-600">Total Hadir: <strong>{sortedRecords.length} Peserta</strong></p>
               <p className="text-[11px] text-slate-600">Dokumen ini diterbitkan otomatis melalui Sistem Presensi Resmi BPAIK UNISA Bandung.</p>
             </div>
 
