@@ -606,7 +606,7 @@ interface AttendanceRow {
   updated_at: string;
 }
 
-interface WorkerQrVerification {
+export interface WorkerQrVerification {
   valid: boolean;
   eventId?: string;
   sessionId?: string;
@@ -614,7 +614,7 @@ interface WorkerQrVerification {
   error?: string;
 }
 
-async function qrHmacHex16(payload: string, secret: string): Promise<string> {
+async function qrHmacHex(payload: string, secret: string): Promise<string> {
   const key = await crypto.subtle.importKey(
     "raw",
     new TextEncoder().encode(secret),
@@ -630,17 +630,16 @@ async function qrHmacHex16(payload: string, secret: string): Promise<string> {
   return Array.from(signature)
     .map(byte => byte.toString(16).padStart(2, "0"))
     .join("")
-    .slice(0, 16);
 }
 
-async function createWorkerQrToken(
+export async function createWorkerQrToken(
   eventId: string,
   sessionId: string,
   secret: string,
   timestamp = Date.now()
 ): Promise<string> {
   const payload = `${eventId}:${sessionId}:${timestamp}`;
-  const mac = await qrHmacHex16(payload, secret);
+  const mac = await qrHmacHex(payload, secret);
 
   return encodeBase64Url(
     new TextEncoder().encode(`${payload}:${mac}`)
@@ -657,10 +656,10 @@ function constantTimeStringEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
-async function verifyWorkerQrToken(
+export async function verifyWorkerQrToken(
   token: string,
   secret: string,
-  maxAgeMs = 20000,
+  maxAgeMs = 15000,
   now = Date.now()
 ): Promise<WorkerQrVerification> {
   try {
@@ -682,13 +681,13 @@ async function verifyWorkerQrToken(
     if (
       !eventId || !sessionId ||
       !/^\d{13}$/.test(timestampText) ||
-      !/^[0-9a-f]{16}$/.test(mac)
+      !/^[0-9a-f]{64}$/.test(mac)
     ) {
       return { valid: false, error: "Isi QR token tidak valid." };
     }
 
     const timestamp = Number(timestampText);
-    const expectedMac = await qrHmacHex16(
+    const expectedMac = await qrHmacHex(
       `${eventId}:${sessionId}:${timestamp}`,
       secret
     );
@@ -820,6 +819,14 @@ export default {
     }
 
     if (path === "/api/d1/status" && request.method === "GET") {
+      const auth = await getSessionUserForApi(request, env);
+      if (!auth.ok) {
+        return json({ success: false, error: auth.error }, auth.status);
+      }
+      if (auth.user.role !== "ADMIN") {
+        return json({ success: false, error: "Hanya admin yang dapat melihat status D1." }, 403);
+      }
+
       try {
         const result = await env.DB.prepare(
           `SELECT name FROM sqlite_master
